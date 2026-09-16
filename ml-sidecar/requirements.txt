@@ -1,0 +1,35 @@
+# ── Transcribbio ML sidecar dependencies ──
+# No PyTorch: CTranslate2 + onnxruntime keep this lean and fast to install.
+
+# Speech-to-text (Slovak, CUDA)
+faster-whisper>=1.1.0
+ctranslate2>=4.5.0
+
+# CUDA 12 runtime libraries (DLLs loaded at startup via os.add_dll_directory)
+nvidia-cublas-cu12==12.4.5.8
+nvidia-cudnn-cu12==9.1.0.70
+
+# VAD backend + audio I/O
+onnxruntime>=1.19,<2.0
+soundfile>=0.12.1
+numpy>=1.26,<2.0
+scipy>=1.11
+# PyAV bundles ffmpeg libs in its wheel -> decode any input (m4a/mp3/wav) with no
+# external ffmpeg install and no admin rights. (Also pulled in by faster-whisper.)
+av>=12.0.0
+
+# Bad-audio salvage (spectral denoise, no torch)
+noisereduce>=3.0.0
+
+# Local HTTP API (loopback IPC with the desktop app)
+fastapi>=0.115
+uvicorn>=0.32
+python-multipart>=0.0.12
+requests>=2.32
+
+# LLM providers
+google-genai>=0.3.0        # Gemini free tier (primary)
+# Ollama is used over its local HTTP API (no python package required)
+
+# Dev/test only: synthesize Slovak audio for smoke tests
+edge-tts>=6.1.0

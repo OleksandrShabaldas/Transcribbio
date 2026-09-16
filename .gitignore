@@ -1,0 +1,67 @@
+# ── Build output ──
+build/
+*/build/
+out/
+.gradle/
+.kotlin/
+
+# ── IDE ──
+.idea/
+*.iml
+.vscode/
+local.properties
+
+# ── Kotlin/Android ──
+captures/
+.cxx/
+*.keystore
+!debug.keystore
+
+# ── Python ML sidecar ──
+ml-sidecar/.venv/
+ml-sidecar/__pycache__/
+**/__pycache__/
+*.pyc
+ml-sidecar/runtime/          # auto-provisioned python runtime (if bundled)
+
+# ── Models & large runtime assets (auto-downloaded, never committed) ──
+models/
+*.bin
+*.onnx
+*.ct2
+*.gguf
+
+# ── App data / user recordings ──
+data/
+recordings/
+*.wav
+*.m4a
+*.mp3
+*.flac
+!ml-sidecar/tests/fixtures/*.wav   # keep small test fixtures
+
+# ── Secrets ──
+.env
+*.local
+secrets.json
+
+# ── Release signing (NEVER publish; back these up privately) ──
+keystore/
+keystore.properties
+*.jks
+*.keystore
+
+# ── Local-only docs (kept private per project preference) ──
+CLAUDE.md
+docs/
+
+# ── Local tooling (portable Gradle/JDK etc., not committed) ──
+.tooling/
+
+# ── Release asset staging (uploaded to GitHub Releases, not committed) ──
+dist/
+
+# ── OS ──
+Thumbs.db
+Desktop.ini
+.DS_Store

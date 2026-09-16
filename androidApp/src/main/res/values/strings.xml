@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Transcribbio</string>
+    <string name="recording_channel">Recording</string>
+    <string name="recording_notification_title">Recording lecture</string>
+</resources>
