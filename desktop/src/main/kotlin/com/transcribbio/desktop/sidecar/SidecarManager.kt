@@ -68,10 +68,11 @@ class SidecarManager(
             _state.value = SidecarState.Failed("Could not locate the ml-sidecar directory")
             return
         }
+        val dataDir = java.nio.file.Paths.get(config.dataDir)
 
         // 1) Ensure the Python environment exists.
         _state.value = SidecarState.Provisioning("Preparing Python environment…")
-        val venv = provisioner.ensureVenv(sidecarDir) { p ->
+        val venv = provisioner.ensureVenv(sidecarDir, dataDir) { p ->
             _state.value = SidecarState.Provisioning(p.message, p.fraction)
             appendLog(p.message)
         }
@@ -84,7 +85,7 @@ class SidecarManager(
         val token = UUID.randomUUID().toString().replace("-", "")
         val env = buildEnv(config, token)
         _state.value = SidecarState.Provisioning("Preparing Whisper model…")
-        val models = provisioner.ensureModels(sidecarDir, env, includeOllama = false) { p ->
+        val models = provisioner.ensureModels(sidecarDir, dataDir, env, includeOllama = false) { p ->
             _state.value = SidecarState.Provisioning(p.message, p.fraction)
             appendLog(p.message)
         }
@@ -95,7 +96,7 @@ class SidecarManager(
 
         // 3) Spawn the sidecar process.
         _state.value = SidecarState.Starting("Starting engine…")
-        val venvPy = SidecarLocator.venvPython(sidecarDir).toString()
+        val venvPy = SidecarLocator.venvPython(sidecarDir, dataDir).toString()
         val portDeferred = CompletableDeferred<Int>()
         val proc = withContext(Dispatchers.IO) {
             val pb = ProcessBuilder(venvPy, "-m", "transcribbio_ml", "--token", token)
@@ -170,7 +171,8 @@ class SidecarManager(
     /** Explicit first-run/offline model provisioning, including the local LLM. */
     suspend fun provisionOfflineModel(config: AppConfig, onProgress: (SidecarProvisioner.Progress) -> Unit): Result<Unit> {
         val dir = SidecarLocator.sidecarDir() ?: return Result.failure(IllegalStateException("no sidecar dir"))
+        val dataDir = java.nio.file.Paths.get(config.dataDir)
         val token = UUID.randomUUID().toString().replace("-", "")
-        return provisioner.ensureModels(dir, buildEnv(config, token), includeOllama = true, onProgress = onProgress)
+        return provisioner.ensureModels(dir, dataDir, buildEnv(config, token), includeOllama = true, onProgress = onProgress)
     }
 }

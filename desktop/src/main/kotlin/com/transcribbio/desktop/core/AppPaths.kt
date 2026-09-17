@@ -50,12 +50,22 @@ object SidecarLocator {
         return null
     }
 
-    fun venvPython(sidecarDir: Path): Path {
-        return if (isWindows) sidecarDir.resolve(".venv/Scripts/python.exe")
-        else sidecarDir.resolve(".venv/bin/python")
+    private fun venvPythonInside(venvDir: Path): Path =
+        if (isWindows) venvDir.resolve("Scripts/python.exe") else venvDir.resolve("bin/python")
+
+    /** The venv that lives under the (writable) data dir — survives app updates. */
+    fun dataVenvDir(dataDir: Path): Path = dataDir.resolve("runtime/venv")
+
+    /** Sidecar interpreter: the dev venv in the source dir if present (development),
+     *  otherwise the data-dir venv (installed app). */
+    fun venvPython(sidecarDir: Path, dataDir: Path): Path {
+        val devVenv = venvPythonInside(sidecarDir.resolve(".venv"))
+        if (Files.isExecutable(devVenv)) return devVenv
+        return venvPythonInside(dataVenvDir(dataDir))
     }
 
-    fun venvReady(sidecarDir: Path): Boolean = Files.isExecutable(venvPython(sidecarDir))
+    fun venvReady(sidecarDir: Path, dataDir: Path): Boolean =
+        Files.isExecutable(venvPython(sidecarDir, dataDir))
 
     /** Find a system Python capable of creating the venv. Returns the launcher argv. */
     fun systemPython(): List<String>? {

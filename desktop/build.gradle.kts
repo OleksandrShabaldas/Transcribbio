@@ -63,7 +63,7 @@ compose.desktop {
             // A single .exe installer — installs like normal Windows software.
             targetFormats(TargetFormat.Exe)
             packageName = "Transcribbio"
-            packageVersion = "1.0.0"
+            packageVersion = "1.0.1"
             description = "Personal Slovak lecture transcription & study-material generator"
             vendor = "Transcribbio"
 
@@ -85,3 +85,21 @@ compose.desktop {
         }
     }
 }
+
+// Bundle the Python ML sidecar source into the packaged app (excluding the venv,
+// caches, and tests) so the installed app can locate and run the engine. The venv
+// and models are created in the user's writable data dir at runtime.
+val copySidecarResources by tasks.registering(Copy::class) {
+    from(rootProject.file("ml-sidecar")) {
+        include("transcribbio_ml/**", "requirements.txt")
+        exclude("**/__pycache__/**", "**/*.pyc")
+    }
+    // Compose only bundles appResources placed under common/ (or an OS-specific subdir).
+    into(layout.projectDirectory.dir("appResources/common/ml-sidecar"))
+}
+
+tasks.matching {
+    it.name == "prepareAppResources" ||
+        it.name == "createDistributable" ||
+        it.name == "createReleaseDistributable"
+}.configureEach { dependsOn(copySidecarResources) }

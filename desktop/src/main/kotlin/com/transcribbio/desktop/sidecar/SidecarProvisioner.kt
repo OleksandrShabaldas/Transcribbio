@@ -15,22 +15,23 @@ class SidecarProvisioner {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Ensure the sidecar venv exists with all dependencies installed. */
-    suspend fun ensureVenv(sidecarDir: Path, onProgress: (Progress) -> Unit): Result<Unit> {
-        if (SidecarLocator.venvReady(sidecarDir)) return Result.success(Unit)
+    /** Ensure the sidecar venv exists (in the writable data dir) with all deps installed. */
+    suspend fun ensureVenv(sidecarDir: Path, dataDir: Path, onProgress: (Progress) -> Unit): Result<Unit> {
+        if (SidecarLocator.venvReady(sidecarDir, dataDir)) return Result.success(Unit)
 
         val sysPython = SidecarLocator.systemPython()
             ?: return Result.failure(IllegalStateException(
                 "No Python interpreter found. Install Python 3.10+ and retry."))
 
         onProgress(Progress("Creating Python environment…", null))
-        val venvDir = sidecarDir.resolve(".venv").toString()
-        val createCode = ProcessRunner.run(sysPython + listOf("-m", "venv", venvDir), sidecarDir) {
+        val venvDir = SidecarLocator.dataVenvDir(dataDir)
+        java.nio.file.Files.createDirectories(venvDir.parent)
+        val createCode = ProcessRunner.run(sysPython + listOf("-m", "venv", venvDir.toString()), sidecarDir) {
             onProgress(Progress(it))
         }
         if (createCode != 0) return Result.failure(IllegalStateException("venv creation failed ($createCode)"))
 
-        val venvPy = SidecarLocator.venvPython(sidecarDir).toString()
+        val venvPy = SidecarLocator.venvPython(sidecarDir, dataDir).toString()
         onProgress(Progress("Upgrading pip…", null))
         ProcessRunner.run(listOf(venvPy, "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"), sidecarDir) {
             onProgress(Progress(it))
@@ -49,11 +50,12 @@ class SidecarProvisioner {
     /** Download the Whisper model (and optionally the local LLM) with progress. */
     suspend fun ensureModels(
         sidecarDir: Path,
+        dataDir: Path,
         env: Map<String, String>,
         includeOllama: Boolean,
         onProgress: (Progress) -> Unit,
     ): Result<Unit> {
-        val venvPy = SidecarLocator.venvPython(sidecarDir).toString()
+        val venvPy = SidecarLocator.venvPython(sidecarDir, dataDir).toString()
         val cmd = mutableListOf(venvPy, "-m", "transcribbio_ml.provision", "--whisper")
         if (includeOllama) cmd += "--ollama"
 
