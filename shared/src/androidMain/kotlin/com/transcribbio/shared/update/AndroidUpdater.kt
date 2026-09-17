@@ -44,8 +44,11 @@ class AndroidUpdater(
             ?: return set(UpdateStatus.Error("Couldn't reach GitHub"))
         val asset = release.assetFor(assetKeyword, UpdateConfig.APK_EXT)
             ?: return set(UpdateStatus.UpToDate)
-        return if (Versions.isNewer(release.tagName, currentVersion))
-            set(UpdateStatus.Available(release.tagName.removePrefix("v"), release, asset))
+        // Compare against the version in the asset filename, not the release tag, so a
+        // reused (unchanged) asset from an older version doesn't trigger a bogus update.
+        val version = Versions.fromFileName(asset.name) ?: release.tagName.removePrefix("v")
+        return if (Versions.isNewer(version, currentVersion))
+            set(UpdateStatus.Available(version, release, asset))
         else set(UpdateStatus.UpToDate)
     }
 

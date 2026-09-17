@@ -63,7 +63,7 @@ compose.desktop {
             // A single .exe installer — installs like normal Windows software.
             targetFormats(TargetFormat.Exe)
             packageName = "Transcribbio"
-            packageVersion = "1.0.1"
+            packageVersion = "1.0.2"
             description = "Personal Slovak lecture transcription & study-material generator"
             vendor = "Transcribbio"
 

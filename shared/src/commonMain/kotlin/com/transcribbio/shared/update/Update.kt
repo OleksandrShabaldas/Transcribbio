@@ -52,6 +52,12 @@ sealed interface UpdateStatus {
 }
 
 object Versions {
+    private val VERSION_RE = Regex("""(\d+)\.(\d+)(?:\.(\d+))?""")
+
+    /** Extract a version like "1.2.3" from an asset filename, e.g.
+     *  "Transcribbio-phone-1.2.3.apk" -> "1.2.3". Null if none found. */
+    fun fromFileName(name: String): String? = VERSION_RE.find(name)?.value
+
     /** "v1.2.3-beta" -> [1,2,3] */
     fun normalize(v: String): List<Int> {
         val cleaned = v.trim().removePrefix("v").removePrefix("V")

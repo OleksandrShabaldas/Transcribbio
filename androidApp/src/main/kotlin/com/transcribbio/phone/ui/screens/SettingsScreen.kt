@@ -103,7 +103,8 @@ fun SettingsScreen() {
         SettingsCard("About") {
             Text("Device: ${Build.MANUFACTURER} ${Build.MODEL}", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("Transcribbio phone 1.0.0", style = MaterialTheme.typography.bodyMedium,
+            Text("Transcribbio phone ${com.transcribbio.phone.BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Recordings are transcribed and turned into study notes on your desktop.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

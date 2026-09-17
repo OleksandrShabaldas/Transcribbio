@@ -30,10 +30,16 @@ import java.awt.Desktop
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URI
+import java.nio.file.Files
+import java.util.zip.ZipInputStream
 import kotlin.system.exitProcess
 
-/** Checks GitHub Releases, downloads the desktop asset resumably, and applies it
- *  by swapping the portable app-image folder on restart. */
+/**
+ * Checks GitHub Releases and applies desktop updates. When running as an installed
+ * app-image, it downloads only the app payload (`…-app.zip` — the app/ folder, no
+ * bundled Java runtime) and swaps it in place on restart. Otherwise (or if no app
+ * payload is published) it downloads and runs the full `.exe` installer.
+ */
 class DesktopUpdater(
     private val currentVersion: String,
     private val dataDir: File,
@@ -46,7 +52,6 @@ class DesktopUpdater(
     private val http = HttpClient(CIO) {
         install(ContentNegotiation) { json(json) }
         install(HttpTimeout) {
-            // Never time out on a slow/paused connection; only bound the initial connect.
             requestTimeoutMillis = Long.MAX_VALUE
             socketTimeoutMillis = Long.MAX_VALUE
             connectTimeoutMillis = 30_000
@@ -54,24 +59,30 @@ class DesktopUpdater(
     }
 
     private val updatesDir = File(dataDir, "updates").apply { runCatching { mkdirs() } }
+    private var pendingExe: GithubAsset? = null
+    private var pendingAppZip: GithubAsset? = null
     private var downloadedFile: File? = null
+    private var downloadedIsAppZip = false
 
-    fun checkOnLaunch() {
-        scope.launch { runCatching { check() } }
-    }
-
-    fun checkManually() {
-        scope.launch { runCatching { check() } }
-    }
+    fun checkOnLaunch() { scope.launch { runCatching { check() } } }
+    fun checkManually() { scope.launch { runCatching { check() } } }
 
     suspend fun check(): UpdateStatus {
         _status.value = UpdateStatus.Checking
         val release = fetchLatest() ?: return set(UpdateStatus.Error("Couldn't reach GitHub"))
-        val asset = release.assetFor(UpdateConfig.DESKTOP_KEYWORD, UpdateConfig.DESKTOP_EXT)
-            ?: return set(UpdateStatus.UpToDate)
-        return if (Versions.isNewer(release.tagName, currentVersion))
-            set(UpdateStatus.Available(release.tagName.removePrefix("v"), release, asset))
-        else set(UpdateStatus.UpToDate)
+        val exe = release.assets.firstOrNull {
+            it.name.contains(UpdateConfig.DESKTOP_KEYWORD, true) && it.name.endsWith(".exe", true)
+        }
+        val appZip = release.assets.firstOrNull {
+            it.name.contains(UpdateConfig.DESKTOP_KEYWORD, true) && it.name.endsWith("-app.zip", true)
+        }
+        val versionAsset = exe ?: appZip ?: return set(UpdateStatus.UpToDate)
+        val version = Versions.fromFileName(versionAsset.name) ?: release.tagName.removePrefix("v")
+        return if (Versions.isNewer(version, currentVersion)) {
+            pendingExe = exe
+            pendingAppZip = appZip
+            set(UpdateStatus.Available(version, release, versionAsset))
+        } else set(UpdateStatus.UpToDate)
     }
 
     private suspend fun fetchLatest(): GithubRelease? = runCatching {
@@ -82,19 +93,112 @@ class DesktopUpdater(
     }.getOrNull()
 
     fun startDownload() {
-        val available = _status.value as? UpdateStatus.Available ?: return
+        val version = (_status.value as? UpdateStatus.Available)?.version ?: return
         scope.launch {
             try {
-                val target = File(updatesDir, available.asset.name)
-                resumableDownload(available.asset, target) { frac ->
-                    _status.value = UpdateStatus.Downloading(available.version, frac)
+                // In-place app swap when installed and a payload exists; else full installer.
+                val useAppZip = detectInstallDir() != null && pendingAppZip != null
+                val asset = if (useAppZip) pendingAppZip!! else (pendingExe ?: pendingAppZip) ?: return@launch
+                val target = File(updatesDir, asset.name)
+                resumableDownload(asset, target) { frac ->
+                    _status.value = UpdateStatus.Downloading(version, frac)
                 }
                 downloadedFile = target
-                _status.value = UpdateStatus.Downloaded(available.version)
+                downloadedIsAppZip = useAppZip
+                _status.value = UpdateStatus.Downloaded(version)
             } catch (e: Exception) {
                 _status.value = UpdateStatus.Error(e.message ?: "Download failed")
             }
         }
+    }
+
+    fun installAndRestart() {
+        val file = downloadedFile ?: return
+        if (downloadedIsAppZip) applyAppZip(file) else runInstaller(file)
+    }
+
+    fun openReleasesPage() {
+        runCatching { Desktop.getDesktop().browse(URI(UpdateConfig.RELEASES_PAGE)) }
+    }
+
+    // ── apply strategies ──
+
+    private fun runInstaller(exe: File) {
+        try {
+            ProcessBuilder(exe.absolutePath).start()
+            exitProcess(0)
+        } catch (e: Exception) {
+            runCatching { Desktop.getDesktop().open(exe.parentFile) }
+            _status.value = UpdateStatus.Error("Couldn't launch installer: ${e.message}")
+        }
+    }
+
+    /** Swap the installed app/ folder (jars + resources) with the downloaded payload,
+     *  leaving the Java runtime and launcher untouched. Applied on restart. */
+    private fun applyAppZip(zip: File) {
+        val installDir = detectInstallDir() ?: run {
+            runCatching { Desktop.getDesktop().open(zip.parentFile) }
+            return
+        }
+        try {
+            val staging = File(updatesDir, "staging")
+            if (staging.exists()) staging.deleteRecursively()
+            staging.mkdirs()
+            extractZip(zip, staging) // -> staging/app/...
+            val newApp = File(staging, "app").takeIf { it.isDirectory } ?: staging
+            val script = writeSwapScript(
+                stagingApp = newApp,
+                installAppDir = File(installDir, "app"),
+                launcher = File(installDir, "Transcribbio.exe"),
+                staging = staging,
+            )
+            ProcessBuilder(
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                script.absolutePath, ProcessHandle.current().pid().toString(),
+            ).start()
+            exitProcess(0)
+        } catch (e: Exception) {
+            _status.value = UpdateStatus.Error("Update failed: ${e.message}")
+        }
+    }
+
+    private fun detectInstallDir(): File? {
+        val javaHome = File(System.getProperty("java.home"))
+        val install = javaHome.parentFile ?: return null // <install>/runtime -> <install>
+        return if (File(install, "Transcribbio.exe").exists()) install else null
+    }
+
+    private fun extractZip(zip: File, dest: File) {
+        ZipInputStream(zip.inputStream().buffered()).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val outFile = File(dest, entry.name)
+                if (entry.isDirectory) outFile.mkdirs()
+                else {
+                    outFile.parentFile?.mkdirs()
+                    outFile.outputStream().use { zis.copyTo(it) }
+                }
+                entry = zis.nextEntry
+            }
+        }
+    }
+
+    private fun writeSwapScript(stagingApp: File, installAppDir: File, launcher: File, staging: File): File {
+        val script = Files.createTempFile("transcribbio-update", ".ps1").toFile()
+        script.writeText(
+            """
+            param([int]${'$'}procId)
+            try { Wait-Process -Id ${'$'}procId -Timeout 120 } catch {}
+            Start-Sleep -Seconds 1
+            robocopy "${stagingApp.absolutePath}" "${installAppDir.absolutePath}" /MIR /NFL /NDL /NJH /NJS /R:3 /W:2 | Out-Null
+            Start-Sleep -Seconds 1
+            Start-Process "${launcher.absolutePath}"
+            Remove-Item -Recurse -Force "${staging.absolutePath}" -ErrorAction SilentlyContinue
+            Remove-Item -Force "${'$'}PSCommandPath" -ErrorAction SilentlyContinue
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+        return script
     }
 
     /** Resumable, retrying download using HTTP Range. Survives disconnects and slow links. */
@@ -127,32 +231,12 @@ class DesktopUpdater(
                     }
                 }
                 if (total <= 0 || target.length() >= total) return
-                // Short read: loop and resume from the new length.
             } catch (e: Exception) {
                 attempt++
                 if (attempt > 30) throw e
                 delay(minOf(30_000L, 1500L * attempt))
-                // loop; download resumes from target.length()
             }
         }
-    }
-
-    /** Apply the update: launch the downloaded installer, then exit so it can replace files. */
-    fun installAndRestart() {
-        val installer = downloadedFile ?: return
-        try {
-            // The .exe is a per-user installer; running it upgrades the install in place
-            // (same upgrade UUID) and creates the Start Menu shortcut.
-            ProcessBuilder(installer.absolutePath).start()
-            exitProcess(0)
-        } catch (e: Exception) {
-            runCatching { Desktop.getDesktop().open(installer.parentFile) }
-            _status.value = UpdateStatus.Error("Couldn't launch installer: ${e.message}")
-        }
-    }
-
-    fun openReleasesPage() {
-        runCatching { Desktop.getDesktop().browse(URI(UpdateConfig.RELEASES_PAGE)) }
     }
 
     private fun set(s: UpdateStatus): UpdateStatus {
