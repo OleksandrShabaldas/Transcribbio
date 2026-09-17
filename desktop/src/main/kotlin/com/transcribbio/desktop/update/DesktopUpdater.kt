@@ -30,8 +30,6 @@ import java.awt.Desktop
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URI
-import java.nio.file.Files
-import java.util.zip.ZipInputStream
 import kotlin.system.exitProcess
 
 /** Checks GitHub Releases, downloads the desktop asset resumably, and applies it
@@ -139,30 +137,17 @@ class DesktopUpdater(
         }
     }
 
-    /** Apply the update: swap the app-image folder on restart, or open the folder in dev. */
+    /** Apply the update: launch the downloaded installer, then exit so it can replace files. */
     fun installAndRestart() {
-        val zip = downloadedFile ?: return
-        val appDir = detectAppDir()
-        if (appDir == null) {
-            // Running from Gradle/dev — no app image to swap. Reveal the download instead.
-            runCatching { Desktop.getDesktop().open(zip.parentFile) }
-            return
-        }
+        val installer = downloadedFile ?: return
         try {
-            val staging = File(appDir.parentFile, "Transcribbio-update-staging")
-            if (staging.exists()) staging.deleteRecursively()
-            staging.mkdirs()
-            extractZip(zip, staging)
-            // The zip contains a top-level "Transcribbio" folder; fall back to staging itself.
-            val newDir = File(staging, "Transcribbio").takeIf { it.isDirectory } ?: staging
-            val script = writeSwapScript(appDir, newDir, staging)
-            ProcessBuilder(
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                script.absolutePath, ProcessHandle.current().pid().toString(),
-            ).start()
+            // The .exe is a per-user installer; running it upgrades the install in place
+            // (same upgrade UUID) and creates the Start Menu shortcut.
+            ProcessBuilder(installer.absolutePath).start()
             exitProcess(0)
         } catch (e: Exception) {
-            _status.value = UpdateStatus.Error("Install failed: ${e.message}")
+            runCatching { Desktop.getDesktop().open(installer.parentFile) }
+            _status.value = UpdateStatus.Error("Couldn't launch installer: ${e.message}")
         }
     }
 
@@ -173,46 +158,5 @@ class DesktopUpdater(
     private fun set(s: UpdateStatus): UpdateStatus {
         _status.value = s
         return s
-    }
-
-    // ── packaged-app helpers ──
-    private fun detectAppDir(): File? {
-        val javaHome = File(System.getProperty("java.home"))
-        val candidate = javaHome.parentFile ?: return null
-        return if (File(candidate, "Transcribbio.exe").exists()) candidate else null
-    }
-
-    private fun extractZip(zip: File, dest: File) {
-        ZipInputStream(zip.inputStream().buffered()).use { zis ->
-            var entry = zis.nextEntry
-            while (entry != null) {
-                val outFile = File(dest, entry.name)
-                if (entry.isDirectory) {
-                    outFile.mkdirs()
-                } else {
-                    outFile.parentFile?.mkdirs()
-                    outFile.outputStream().use { zis.copyTo(it) }
-                }
-                entry = zis.nextEntry
-            }
-        }
-    }
-
-    private fun writeSwapScript(appDir: File, newDir: File, staging: File): File {
-        val script = Files.createTempFile("transcribbio-update", ".ps1").toFile()
-        script.writeText(
-            """
-            param([int]${'$'}procId)
-            try { Wait-Process -Id ${'$'}procId -Timeout 120 } catch {}
-            Start-Sleep -Seconds 1
-            robocopy "${newDir.absolutePath}" "${appDir.absolutePath}" /MIR /NFL /NDL /NJH /NJS /R:2 /W:2 | Out-Null
-            Start-Sleep -Seconds 1
-            Start-Process "${File(appDir, "Transcribbio.exe").absolutePath}"
-            Remove-Item -Recurse -Force "${staging.absolutePath}" -ErrorAction SilentlyContinue
-            Remove-Item -Force "${'$'}PSCommandPath" -ErrorAction SilentlyContinue
-            """.trimIndent(),
-            Charsets.UTF_8,
-        )
-        return script
     }
 }

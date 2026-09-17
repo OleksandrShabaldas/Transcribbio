@@ -12,7 +12,7 @@ object UpdateConfig {
 
     // Release assets are named "Transcribbio-<platform>-<version>...".
     const val DESKTOP_KEYWORD = "desktop"
-    const val DESKTOP_EXT = ".zip"
+    const val DESKTOP_EXT = ".exe"   // single-file Windows installer
     const val PHONE_KEYWORD = "phone"
     const val WATCH_KEYWORD = "watch"
     const val APK_EXT = ".apk"

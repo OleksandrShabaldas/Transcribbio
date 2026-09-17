@@ -39,8 +39,9 @@ Uses a portable Gradle in `.tooling/` and the JDK 17 already on the machine.
 # Desktop hub (opens the app; it auto-starts the Python engine on first run)
 ./gradlew :desktop:run
 
-# Package the desktop app as a Windows installer (.msi/.exe)
-./gradlew :desktop:packageDistributionForCurrentOS
+# Build the single-file Windows installer -> desktop/build/compose/binaries/main-release/exe/
+# (needs the WiX 3 toolset on PATH; a portable copy lives in .tooling/wix314)
+./gradlew :desktop:packageReleaseExe
 
 # Android phone app -> androidApp/build/outputs/apk/debug/androidApp-debug.apk
 ./gradlew :androidApp:assembleDebug

@@ -60,7 +60,8 @@ compose.desktop {
         }
 
         nativeDistributions {
-            targetFormats(TargetFormat.Msi, TargetFormat.Exe)
+            // A single .exe installer — installs like normal Windows software.
+            targetFormats(TargetFormat.Exe)
             packageName = "Transcribbio"
             packageVersion = "1.0.0"
             description = "Personal Slovak lecture transcription & study-material generator"
@@ -69,7 +70,9 @@ compose.desktop {
             windows {
                 menuGroup = "Transcribbio"
                 shortcut = true
-                // Stable UUID so upgrades replace rather than duplicate the install.
+                // Per-user install: no admin prompt; upgrades in place via the stable UUID.
+                perUserInstall = true
+                dirChooser = true
                 upgradeUuid = "0f9d2c1e-6a4b-4b2a-9d3e-2f5a1b7c8d90"
             }
 
