@@ -34,7 +34,7 @@ sealed interface Screen {
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
-private const val APP_VERSION = "1.0.2"
+private const val APP_VERSION = "1.0.3"
 
 class AppState {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -65,11 +65,11 @@ class AppState {
     private var recordingAudioPath: Path? = null
 
     init {
-        val initialConfig = ConfigStore(AppEnvironment(AppEnvironment.defaultDataDir())).load()
-        env = AppEnvironment(Paths.get(initialConfig.dataDir))
+        env = AppEnvironment(AppEnvironment.defaultDataDir())
+        env.migrateFromLegacy() // must run BEFORE ensureDirs (which would pre-create empty dst dirs)
         env.ensureDirs()
         configStore = ConfigStore(env)
-        _config = MutableStateFlow(initialConfig.copy(dataDir = env.dataDir.toString()))
+        _config = MutableStateFlow(configStore.load().copy(dataDir = env.dataDir.toString()))
         config = _config.asStateFlow()
         repo = LibraryRepository(env)
         orchestrator = ProcessingOrchestrator(sidecar, repo) { _config.value }

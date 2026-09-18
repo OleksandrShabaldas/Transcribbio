@@ -7,10 +7,15 @@ stdout (which the desktop app parses to learn the port + token), then serves.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import os
 import socket
 import sys
+
+# Dump a Python traceback to stderr on a native crash (segfault / access violation),
+# so a hard crash (e.g. a bad DLL load) is diagnosable instead of a bare exit code.
+faulthandler.enable()
 
 
 def _free_port() -> int:

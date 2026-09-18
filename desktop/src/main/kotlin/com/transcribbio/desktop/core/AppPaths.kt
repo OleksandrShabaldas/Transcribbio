@@ -16,10 +16,35 @@ class AppEnvironment(val dataDir: Path) {
         listOf(dataDir, libraryDir, modelsDir, logsDir).forEach { Files.createDirectories(it) }
     }
 
+    /** Move data from the pre-1.0.3 location (which collided with the per-user install
+     *  dir `%LOCALAPPDATA%\Transcribbio`) into the new dedicated data dir, so users keep
+     *  their lectures and the downloaded model instead of re-provisioning. */
+    fun migrateFromLegacy() {
+        val local = System.getenv("LOCALAPPDATA") ?: return
+        val legacy = Paths.get(local, "Transcribbio")
+        if (legacy == dataDir) return
+        runCatching { Files.createDirectories(dataDir) }
+        for (sub in listOf("models", "library", "logs")) {
+            val src = legacy.resolve(sub)
+            val dst = dataDir.resolve(sub)
+            if (Files.isDirectory(src) && !Files.exists(dst)) {
+                runCatching { Files.move(src, dst) }
+            }
+        }
+        // Carry over settings (e.g. the Gemini API key). Copy, not move.
+        val srcCfg = legacy.resolve("desktop-config.json")
+        val dstCfg = dataDir.resolve("desktop-config.json")
+        if (Files.exists(srcCfg) && !Files.exists(dstCfg)) {
+            runCatching { Files.copy(srcCfg, dstCfg) }
+        }
+    }
+
     companion object {
         fun defaultDataDir(): Path {
             System.getenv("TRANSCRIBBIO_DATA_DIR")?.let { return Paths.get(it) }
-            System.getenv("LOCALAPPDATA")?.let { return Paths.get(it, "Transcribbio") }
+            // NB: must NOT be `%LOCALAPPDATA%\Transcribbio` — that's the per-user install
+            // dir (jpackage), and putting the engine venv there loads the JVM's DLLs -> crash.
+            System.getenv("LOCALAPPDATA")?.let { return Paths.get(it, "TranscribbioData") }
             return Paths.get(System.getProperty("user.home"), ".transcribbio")
         }
     }

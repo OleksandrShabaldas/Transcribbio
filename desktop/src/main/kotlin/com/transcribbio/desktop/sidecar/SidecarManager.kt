@@ -44,8 +44,11 @@ class SidecarManager(
     private var process: Process? = null
     private val json = Json { ignoreUnknownKeys = true }
 
+    @Volatile private var logFile: java.io.File? = null
+
     private fun appendLog(line: String) {
         _log.value = (_log.value + line).takeLast(400)
+        logFile?.let { f -> runCatching { f.appendText(line + System.lineSeparator()) } }
     }
 
     private fun buildEnv(config: AppConfig, token: String): Map<String, String> = buildMap {
@@ -69,6 +72,9 @@ class SidecarManager(
             return
         }
         val dataDir = java.nio.file.Paths.get(config.dataDir)
+        logFile = dataDir.resolve("logs").resolve("sidecar.log").toFile().also { f ->
+            runCatching { f.parentFile?.mkdirs(); f.writeText("") }
+        }
 
         // 1) Ensure the Python environment exists.
         _state.value = SidecarState.Provisioning("Preparing Python environment…")
@@ -103,6 +109,7 @@ class SidecarManager(
                 .redirectErrorStream(true)
             pb.directory(sidecarDir.toFile())
             pb.environment().putAll(env)
+            com.transcribbio.desktop.core.ProcessRunner.stripJvmFromPath(pb)
             pb.start()
         }
         process = proc
