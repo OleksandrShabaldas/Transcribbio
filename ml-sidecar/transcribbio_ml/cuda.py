@@ -38,12 +38,35 @@ def _nvidia_bin_dirs() -> list[Path]:
     return dirs
 
 
+def _preload_vc_runtime() -> None:
+    """Load the system Visual C++ runtime (MSVCP140/vcruntime140) explicitly, first.
+
+    When the sidecar is launched by the packaged desktop app, the app's bundled Java
+    runtime dir is on the search path and ships an OLDER MSVCP140.dll. If cuDNN/cuBLAS
+    bind to that instead of the newer system one, CTranslate2's CUDA model load crashes
+    with an access violation (0xC0000005). Loading the correct System32 copy up front
+    pins the process to it (a process holds only one MSVCP140.dll)."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+        path = os.path.join(system32, name)
+        if os.path.exists(path):
+            try:
+                ctypes.WinDLL(path)
+            except OSError:
+                pass
+
+
 def setup_cuda_dll_path() -> bool:
     """Register bundled CUDA DLL directories. Idempotent. Returns True if any found."""
     global _dll_dirs_registered
     if _dll_dirs_registered:
         return True
 
+    _preload_vc_runtime()
     found = False
     for d in _nvidia_bin_dirs():
         found = True

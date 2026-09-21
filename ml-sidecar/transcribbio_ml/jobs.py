@@ -117,6 +117,9 @@ class JobManager:
             )
             transcription = _to_transcription_response(tr, pre.snr_db, pre.denoised)
 
+            # The transcript is the core deliverable. LLM steps (correction, study
+            # materials) are best-effort: if no provider is available or one fails, keep
+            # the transcript and finish successfully rather than throwing it away.
             corrected_text: Optional[str] = None
             correction_provider: Optional[str] = None
             if req.correct and tr.text.strip():
@@ -124,12 +127,15 @@ class JobManager:
                     self._set(job_id, stage="correct", fraction=0.60 + frac * 0.25, message=msg)
 
                 self._set(job_id, stage="correct", fraction=0.60, message="Correcting transcript")
-                corrected_text, correction_provider = correct_transcript(
-                    self.router, tr.text, tr.language,
-                    chunk_words=self.settings.correction_chunk_words,
-                    overlap_words=self.settings.correction_overlap_words,
-                    progress=corr_progress,
-                )
+                try:
+                    corrected_text, correction_provider = correct_transcript(
+                        self.router, tr.text, tr.language,
+                        chunk_words=self.settings.correction_chunk_words,
+                        overlap_words=self.settings.correction_overlap_words,
+                        progress=corr_progress,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Correction skipped (keeping raw transcript): %s", e)
 
             materials: dict[str, MaterialResponse] = {}
             base_text = corrected_text or tr.text
@@ -138,12 +144,15 @@ class JobManager:
                 for i, kind in enumerate(req.materials):
                     self._set(job_id, stage=f"materials:{kind}", fraction=0.85 + (i / n) * 0.15,
                               message=f"Generating {kind}")
-                    mr = generate_material(self.router, kind, base_text, tr.language)
-                    materials[kind] = MaterialResponse(
-                        kind=mr.kind, provider=mr.provider, markdown=mr.markdown,
-                        flashcards=[FlashcardModel(question=c.question, answer=c.answer)
-                                    for c in mr.flashcards] if mr.flashcards else None,
-                    )
+                    try:
+                        mr = generate_material(self.router, kind, base_text, tr.language)
+                        materials[kind] = MaterialResponse(
+                            kind=mr.kind, provider=mr.provider, markdown=mr.markdown,
+                            flashcards=[FlashcardModel(question=c.question, answer=c.answer)
+                                        for c in mr.flashcards] if mr.flashcards else None,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("Study material '%s' skipped: %s", kind, e)
 
             result = ProcessResult(
                 transcription=transcription,
