@@ -34,7 +34,7 @@ sealed interface Screen {
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
-private const val APP_VERSION = "1.0.4"
+private const val APP_VERSION = "1.0.5"
 
 class AppState {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

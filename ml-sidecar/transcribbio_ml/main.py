@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 from . import __version__, cuda
 from .config import Settings, get_settings
+from .llm import ProviderError
 from .llm.router import LLMRouter
 from .jobs import JobManager
 from .models import (
@@ -90,16 +91,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.post("/correct", response_model=CorrectResponse, dependencies=[Depends(auth)])
     def correct(req: CorrectRequest) -> CorrectResponse:
-        text, provider = correct_transcript(
-            router, req.text, req.language,
-            chunk_words=settings.correction_chunk_words,
-            overlap_words=settings.correction_overlap_words,
-        )
+        try:
+            text, provider = correct_transcript(
+                router, req.text, req.language,
+                chunk_words=settings.correction_chunk_words,
+                overlap_words=settings.correction_overlap_words,
+            )
+        except ProviderError as e:
+            # 503 + a clear message so the desktop can guide the user to set up a provider,
+            # instead of a generic 500 that surfaces as "nothing happened".
+            raise HTTPException(status_code=503, detail=f"AI provider unavailable: {e}")
         return CorrectResponse(text=text, provider=provider)
 
     @app.post("/materials", response_model=MaterialResponse, dependencies=[Depends(auth)])
     def materials(req: MaterialRequest) -> MaterialResponse:
-        mr = generate_material(router, req.kind, req.text, req.language)
+        try:
+            mr = generate_material(router, req.kind, req.text, req.language)
+        except ProviderError as e:
+            raise HTTPException(status_code=503, detail=f"AI provider unavailable: {e}")
         return MaterialResponse(
             kind=mr.kind, provider=mr.provider, markdown=mr.markdown,
             flashcards=[FlashcardModel(question=c.question, answer=c.answer)

@@ -56,6 +56,7 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
     val syncState by state.syncServer.state.collectAsState()
     val updateStatus by state.updater.status.collectAsState()
     val offlineMsg by state.offlineProvisionMsg.collectAsState()
+    val saved by state.config.collectAsState()
     var draft by remember { mutableStateOf(state.config.value) }
     var showKey by remember { mutableStateOf(false) }
     var savedTick by remember { mutableStateOf(false) }
@@ -94,6 +95,24 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
             }
             PolicyOption("Gemini only (always cloud)", LlmPolicy.GEMINI_ONLY, draft.llmPolicy) {
                 draft = draft.copy(llmPolicy = it)
+            }
+            // A dedicated save here so the key/provider actually takes effect — the
+            // earlier version only saved from the button at the very bottom, which was
+            // easy to miss (a pasted key that was never applied looked like "nothing works").
+            Spacer(Modifier.height(4.dp))
+            val aiUnsaved = draft.geminiApiKey != saved.geminiApiKey || draft.llmPolicy != saved.llmPolicy
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = { state.saveSettings(draft); savedTick = true }, enabled = aiUnsaved) {
+                    Text("Save & apply")
+                }
+                when {
+                    aiUnsaved -> Text("Unsaved — click to apply", color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodyMedium)
+                    draft.hasGeminiKey() -> Text("✓ Key saved — the engine will use Gemini",
+                        color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.bodyMedium)
+                    else -> Text("No key set — AI features need a key or the offline model",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                }
             }
         }
 

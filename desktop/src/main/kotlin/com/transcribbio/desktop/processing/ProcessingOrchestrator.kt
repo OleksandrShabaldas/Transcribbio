@@ -38,6 +38,26 @@ class ProcessingOrchestrator(
     private val _busyMaterials = MutableStateFlow<Set<String>>(emptySet()) // "lectureId:kind"
     val busyMaterials: StateFlow<Set<String>> = _busyMaterials.asStateFlow()
 
+    // Per-action error messages, keyed "lectureId:kind" (kind "correct" for re-correction),
+    // so the UI can tell the user *why* a step did nothing instead of failing silently.
+    private val _materialErrors = MutableStateFlow<Map<String, String>>(emptyMap())
+    val materialErrors: StateFlow<Map<String, String>> = _materialErrors.asStateFlow()
+
+    private fun setError(key: String, msg: String) { _materialErrors.value = _materialErrors.value + (key to msg) }
+    private fun clearError(key: String) { _materialErrors.value = _materialErrors.value - key }
+
+    /** Turn a raw sidecar/provider error into something actionable for the user. */
+    private fun friendlyLlmError(raw: String?): String {
+        val msg = raw?.takeIf { it.isNotBlank() } ?: "Unknown error"
+        val noProvider = listOf(
+            "no llm provider", "unavailable", "api key", "provider", "503", "service unavailable",
+        ).any { msg.contains(it, ignoreCase = true) }
+        return if (noProvider)
+            "No AI provider is set up. Open Settings, paste your Gemini API key and press " +
+                "\"Save & apply\" — or download the offline model to use it without internet."
+        else "Generation failed: $msg"
+    }
+
     private fun setProgress(p: ProcessingProgress) {
         _progress.value = _progress.value + (p.lectureId to p)
     }
@@ -130,17 +150,25 @@ class ProcessingOrchestrator(
 
     /** Generate a single study material on demand (lazy tabs). */
     suspend fun generateMaterial(lectureId: String, kind: StudyMaterialKind) {
-        val client = sidecar.client ?: return
-        val lecture = repo.get(lectureId) ?: return
-        val text = lecture.transcript?.bestText ?: return
         val key = "$lectureId:${kind.api}"
+        val client = sidecar.client ?: run {
+            setError(key, "The engine isn't ready yet — give it a moment to start (see Settings › Engine), then try again.")
+            return
+        }
+        val lecture = repo.get(lectureId) ?: return
+        val text = lecture.transcript?.bestText ?: run {
+            setError(key, "Transcribe this lecture first, then generate study materials.")
+            return
+        }
+        clearError(key)
         _busyMaterials.value = _busyMaterials.value + key
         try {
             val resp = client.material(MaterialRequestDto(kind.api, text, lecture.language))
             val updated = repo.get(lectureId) ?: lecture
             repo.save(updated.copy(materials = updated.materials + (kind to toMaterial(kind, resp))))
-        } catch (_: Exception) {
-            // leave as-is; UI can retry
+            clearError(key)
+        } catch (e: Exception) {
+            setError(key, friendlyLlmError(e.message))
         } finally {
             _busyMaterials.value = _busyMaterials.value - key
         }
@@ -148,11 +176,26 @@ class ProcessingOrchestrator(
 
     /** Re-run the LLM correction pass over the raw transcript. */
     suspend fun reCorrect(lectureId: String) {
-        val client = sidecar.client ?: return
+        val key = "$lectureId:correct"
+        val client = sidecar.client ?: run {
+            setError(key, "The engine isn't ready yet — give it a moment to start (see Settings › Engine), then try again.")
+            return
+        }
         val lecture = repo.get(lectureId) ?: return
         val t = lecture.transcript ?: return
-        val resp = client.correct(CorrectRequestDto(t.rawText, lecture.language))
-        repo.save(lecture.copy(transcript = t.copy(cleanText = resp.text, correctionProvider = resp.provider)))
+        clearError(key)
+        _busyMaterials.value = _busyMaterials.value + key
+        try {
+            val resp = client.correct(CorrectRequestDto(t.rawText, lecture.language))
+            val updated = repo.get(lectureId) ?: lecture
+            val nt = (updated.transcript ?: t).copy(cleanText = resp.text, correctionProvider = resp.provider)
+            repo.save(updated.copy(transcript = nt))
+            clearError(key)
+        } catch (e: Exception) {
+            setError(key, friendlyLlmError(e.message))
+        } finally {
+            _busyMaterials.value = _busyMaterials.value - key
+        }
     }
 
     // ── DTO → model mapping ──

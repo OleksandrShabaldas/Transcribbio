@@ -16,9 +16,11 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -33,6 +35,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,11 +43,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
 import com.transcribbio.desktop.ui.AppState
+import com.transcribbio.desktop.ui.Screen
+import kotlinx.coroutines.delay
 import com.transcribbio.desktop.ui.components.MarkdownText
 import com.transcribbio.desktop.ui.util.formatDuration
 import com.transcribbio.desktop.ui.util.languageLabel
@@ -66,6 +72,7 @@ fun LectureDetailScreen(
 ) {
     val lectures by state.repo.lectures.collectAsState()
     val busy by state.orchestrator.busyMaterials.collectAsState()
+    val errors by state.orchestrator.materialErrors.collectAsState()
     val progressMap by state.orchestrator.progress.collectAsState()
     val lecture = lectures.firstOrNull { it.id == lectureId } ?: run {
         Box(Modifier.fillMaxSize(), Alignment.Center) { Text("Lecture not found") }
@@ -75,7 +82,7 @@ fun LectureDetailScreen(
     val progress = progressMap[lectureId]
 
     Column(Modifier.fillMaxSize()) {
-        DetailHeader(state, lecture)
+        DetailHeader(state, lecture, busy, errors)
 
         if (progress != null && lecture.status != LectureStatus.DONE) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
@@ -102,17 +109,17 @@ fun LectureDetailScreen(
         Box(Modifier.fillMaxSize().padding(24.dp)) {
             when (tab) {
                 0 -> TranscriptTab(lecture.transcript!!)
-                1 -> MaterialTab(state, lecture, StudyMaterialKind.SUMMARY, busy)
-                2 -> MaterialTab(state, lecture, StudyMaterialKind.NOTES, busy)
-                3 -> MaterialTab(state, lecture, StudyMaterialKind.TAKEAWAYS, busy)
-                4 -> FlashcardsTab(state, lecture, busy, pickSaveFile)
+                1 -> MaterialTab(state, lecture, StudyMaterialKind.SUMMARY, busy, errors)
+                2 -> MaterialTab(state, lecture, StudyMaterialKind.NOTES, busy, errors)
+                3 -> MaterialTab(state, lecture, StudyMaterialKind.TAKEAWAYS, busy, errors)
+                4 -> FlashcardsTab(state, lecture, busy, errors, pickSaveFile)
             }
         }
     }
 }
 
 @Composable
-private fun DetailHeader(state: AppState, lecture: Lecture) {
+private fun DetailHeader(state: AppState, lecture: Lecture, busy: Set<String>, errors: Map<String, String>) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp)) {
         Text(lecture.title, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(6.dp))
@@ -128,10 +135,16 @@ private fun DetailHeader(state: AppState, lecture: Lecture) {
             }
         }
         Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        val correcting = busy.contains("${lecture.id}:correct")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             if (lecture.transcript != null) {
-                OutlinedButton(onClick = { state.reCorrect(lecture.id) }) {
-                    Icon(Icons.Default.AutoFixHigh, null, Modifier.size(18.dp)); Text("  Re-correct")
+                OutlinedButton(onClick = { state.reCorrect(lecture.id) }, enabled = !correcting) {
+                    if (correcting) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text("  Correcting…")
+                    } else {
+                        Icon(Icons.Default.AutoFixHigh, null, Modifier.size(18.dp)); Text("  Re-correct")
+                    }
                 }
             }
             if (lecture.status != LectureStatus.DONE &&
@@ -148,6 +161,10 @@ private fun DetailHeader(state: AppState, lecture: Lecture) {
                     tint = MaterialTheme.colorScheme.error)
                 Text("  Delete", color = MaterialTheme.colorScheme.error)
             }
+        }
+        errors["${lecture.id}:correct"]?.let { err ->
+            Spacer(Modifier.height(10.dp))
+            ErrorNote(err) { state.navigate(Screen.Settings) }
         }
     }
 }
@@ -185,6 +202,10 @@ private fun NotProcessedYet(state: AppState, lecture: Lecture) {
 private fun TranscriptTab(transcript: Transcript) {
     var showRaw by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    val shownText = if (showRaw || transcript.cleanText == null) transcript.rawText else transcript.cleanText!!
+    LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -195,6 +216,10 @@ private fun TranscriptTab(transcript: Transcript) {
                 TextButton(onClick = { showRaw = !showRaw }) {
                     Text(if (showRaw) "Show corrected" else "Show raw")
                 }
+            }
+            TextButton(onClick = { clipboard.setText(AnnotatedString(shownText)); copied = true }) {
+                Icon(Icons.Default.ContentCopy, null, Modifier.size(18.dp))
+                Text(if (copied) "  Copied!" else "  Copy")
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -225,9 +250,10 @@ private fun buildRawAnnotated(transcript: Transcript): AnnotatedString = buildAn
 }
 
 @Composable
-private fun MaterialTab(state: AppState, lecture: Lecture, kind: StudyMaterialKind, busy: Set<String>) {
+private fun MaterialTab(state: AppState, lecture: Lecture, kind: StudyMaterialKind, busy: Set<String>, errors: Map<String, String>) {
     val material = lecture.materials[kind]
-    val isBusy = busy.contains("${lecture.id}:${kind.api}")
+    val key = "${lecture.id}:${kind.api}"
+    val isBusy = busy.contains(key)
     val scroll = rememberScrollState()
     when {
         material?.markdown != null -> Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
@@ -235,17 +261,20 @@ private fun MaterialTab(state: AppState, lecture: Lecture, kind: StudyMaterialKi
             Spacer(Modifier.height(8.dp))
             ProviderNote(material.provider) { state.generateMaterial(lecture.id, kind) }
         }
-        else -> GeneratePrompt(kind.name.lowercase(), isBusy) { state.generateMaterial(lecture.id, kind) }
+        else -> GeneratePrompt(kind.name.lowercase(), isBusy, errors[key],
+            onOpenSettings = { state.navigate(Screen.Settings) }) { state.generateMaterial(lecture.id, kind) }
     }
 }
 
 @Composable
-private fun FlashcardsTab(state: AppState, lecture: Lecture, busy: Set<String>, pickSaveFile: (String) -> Path?) {
+private fun FlashcardsTab(state: AppState, lecture: Lecture, busy: Set<String>, errors: Map<String, String>, pickSaveFile: (String) -> Path?) {
     val material = lecture.materials[StudyMaterialKind.FLASHCARDS]
     val cards = material?.flashcards
-    val isBusy = busy.contains("${lecture.id}:flashcards")
+    val key = "${lecture.id}:flashcards"
+    val isBusy = busy.contains(key)
     if (cards.isNullOrEmpty()) {
-        GeneratePrompt("flashcards", isBusy) { state.generateMaterial(lecture.id, StudyMaterialKind.FLASHCARDS) }
+        GeneratePrompt("flashcards", isBusy, errors[key],
+            onOpenSettings = { state.navigate(Screen.Settings) }) { state.generateMaterial(lecture.id, StudyMaterialKind.FLASHCARDS) }
         return
     }
     val scroll = rememberScrollState()
@@ -288,7 +317,13 @@ private fun FlashcardCard(card: Flashcard) {
 }
 
 @Composable
-private fun GeneratePrompt(name: String, busy: Boolean, onGenerate: () -> Unit) {
+private fun GeneratePrompt(
+    name: String,
+    busy: Boolean,
+    error: String? = null,
+    onOpenSettings: () -> Unit = {},
+    onGenerate: () -> Unit,
+) {
     Box(Modifier.fillMaxSize(), Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -296,11 +331,29 @@ private fun GeneratePrompt(name: String, busy: Boolean, onGenerate: () -> Unit) 
                 CircularProgressIndicator()
                 Text("Generating $name…", style = MaterialTheme.typography.bodyLarge)
             } else {
-                Text("No $name generated yet.", style = MaterialTheme.typography.bodyLarge)
+                if (error != null) {
+                    ErrorNote(error, onOpenSettings)
+                } else {
+                    Text("No $name generated yet.", style = MaterialTheme.typography.bodyLarge)
+                }
                 Button(onClick = onGenerate) {
                     Icon(Icons.Default.AutoFixHigh, null, Modifier.size(18.dp))
-                    Text("  Generate $name")
+                    Text(if (error != null) "  Try again" else "  Generate $name")
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorNote(message: String, onOpenSettings: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+        Column(Modifier.padding(14.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(message, style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer)
+            TextButton(onClick = onOpenSettings) {
+                Icon(Icons.Default.Settings, null, Modifier.size(18.dp))
+                Text("  Open Settings")
             }
         }
     }
