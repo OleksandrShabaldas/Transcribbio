@@ -32,11 +32,13 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -61,6 +63,19 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
     var showKey by remember { mutableStateOf(false) }
     var savedTick by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
+
+    // Auto-apply the Gemini key: users kept pasting a key and forgetting to press Save,
+    // so it never reached the engine. Persist + restart the engine shortly after the key
+    // stops changing. Debounced so a paste doesn't restart the engine on every character.
+    LaunchedEffect(draft.geminiApiKey) {
+        if (draft.geminiApiKey != saved.geminiApiKey) {
+            delay(600)
+            if (draft.geminiApiKey != state.config.value.geminiApiKey) {
+                state.saveSettings(draft)
+                savedTick = true
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -96,17 +111,19 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
             PolicyOption("Gemini only (always cloud)", LlmPolicy.GEMINI_ONLY, draft.llmPolicy) {
                 draft = draft.copy(llmPolicy = it)
             }
-            // A dedicated save here so the key/provider actually takes effect — the
-            // earlier version only saved from the button at the very bottom, which was
-            // easy to miss (a pasted key that was never applied looked like "nothing works").
+            // The key now auto-applies (see the LaunchedEffect above) so it can't be lost by
+            // forgetting to save; this button stays for policy changes and as an explicit apply.
             Spacer(Modifier.height(4.dp))
-            val aiUnsaved = draft.geminiApiKey != saved.geminiApiKey || draft.llmPolicy != saved.llmPolicy
+            val keyUnsaved = draft.geminiApiKey != saved.geminiApiKey
+            val policyUnsaved = draft.llmPolicy != saved.llmPolicy
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { state.saveSettings(draft); savedTick = true }, enabled = aiUnsaved) {
+                Button(onClick = { state.saveSettings(draft); savedTick = true }, enabled = keyUnsaved || policyUnsaved) {
                     Text("Save & apply")
                 }
                 when {
-                    aiUnsaved -> Text("Unsaved — click to apply", color = MaterialTheme.colorScheme.primary,
+                    keyUnsaved -> Text("Applying key & restarting engine…", color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodyMedium)
+                    policyUnsaved -> Text("Unsaved — click Save & apply", color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.bodyMedium)
                     draft.hasGeminiKey() -> Text("✓ Key saved — the engine will use Gemini",
                         color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.bodyMedium)

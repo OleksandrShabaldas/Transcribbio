@@ -46,16 +46,27 @@ class ProcessingOrchestrator(
     private fun setError(key: String, msg: String) { _materialErrors.value = _materialErrors.value + (key to msg) }
     private fun clearError(key: String) { _materialErrors.value = _materialErrors.value - key }
 
-    /** Turn a raw sidecar/provider error into something actionable for the user. */
+    /** Turn a raw sidecar/provider error into an accurate, actionable message. The sidecar
+     *  reports the real cause in its `detail` (e.g. "gemini: No Gemini API key configured"
+     *  or "gemini: ... API key not valid"), so we distinguish "no key" from "bad key". */
     private fun friendlyLlmError(raw: String?): String {
         val msg = raw?.takeIf { it.isNotBlank() } ?: "Unknown error"
-        val noProvider = listOf(
-            "no llm provider", "unavailable", "api key", "provider", "503", "service unavailable",
-        ).any { msg.contains(it, ignoreCase = true) }
-        return if (noProvider)
-            "No AI provider is set up. Open Settings, paste your Gemini API key and press " +
-                "\"Save & apply\" — or download the offline model to use it without internet."
-        else "Generation failed: $msg"
+        val lower = msg.lowercase()
+        val badKey = listOf("api key not valid", "api_key_invalid", "invalid api key",
+            "unauthorized", "401", "permission_denied", "permission denied").any { it in lower }
+        val quota = listOf("quota", "429", "rate limit", "resource_exhausted").any { it in lower }
+        val noKey = "no gemini api key" in lower ||
+            ("gemini: unavailable" in lower && "ollama: unavailable" in lower) ||
+            ("no llm provider" in lower && "ollama: unavailable" in lower && "gemini" !in lower)
+        return when {
+            badKey -> "Gemini rejected the API key. Re-copy the whole key from Google AI Studio " +
+                "into Settings ▸ AI (it applies automatically) and try again."
+            quota -> "Gemini's free-tier quota is used up for now. Wait a bit and retry, or " +
+                "download the offline model in Settings."
+            noKey -> "No AI provider is set up yet. Paste your Gemini API key in Settings ▸ AI " +
+                "(it applies automatically now) — or download the offline model to work without internet."
+            else -> "AI generation failed — $msg"
+        }
     }
 
     private fun setProgress(p: ProcessingProgress) {

@@ -3,6 +3,7 @@ package com.transcribbio.desktop.sidecar
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -14,6 +15,8 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /** Loopback HTTP client for the Python ML sidecar. */
 class SidecarClient(
@@ -59,15 +62,31 @@ class SidecarClient(
             auth(); contentType(ContentType.Application.Json); setBody(req)
         }.body()
 
-    suspend fun correct(req: CorrectRequestDto): CorrectResponseDto =
+    suspend fun correct(req: CorrectRequestDto): CorrectResponseDto = wrapErrors {
         http.post(url("/correct")) {
             auth(); contentType(ContentType.Application.Json); setBody(req)
         }.body()
+    }
 
-    suspend fun material(req: MaterialRequestDto): MaterialResponseDto =
+    suspend fun material(req: MaterialRequestDto): MaterialResponseDto = wrapErrors {
         http.post(url("/materials")) {
             auth(); contentType(ContentType.Application.Json); setBody(req)
         }.body()
+    }
+
+    /** Turn an HTTP error into a clean exception carrying the sidecar's own `detail`
+     *  message (e.g. "AI provider unavailable: …"), so the UI can explain the real cause
+     *  instead of a bare status code. */
+    private suspend fun <T> wrapErrors(block: suspend () -> T): T = try {
+        block()
+    } catch (e: ResponseException) {
+        val detail = runCatching {
+            val body = e.response.bodyAsText()
+            (jsonCodec.parseToJsonElement(body) as? JsonObject)
+                ?.get("detail")?.jsonPrimitive?.content ?: body
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: (e.message ?: "request failed")
+        throw RuntimeException(detail)
+    }
 
     fun close() = http.close()
 }
