@@ -50,7 +50,8 @@ fun ResultsScreen(onOpen: (String) -> Unit) {
             lectures = result
             loading = false
             if (result.isEmpty()) message =
-                "No lectures found. Make sure your desktop app is open on the same Wi-Fi."
+                "No lectures found. Make sure the desktop app is open. If the phone can't find your PC, " +
+                    "set its address in Settings ▸ Desktop connection."
         }
     }
 

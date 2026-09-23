@@ -22,7 +22,7 @@ class LLMResult:
 class LLMRouter:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.gemini = GeminiProvider(settings.gemini_api_key, settings.gemini_model)
+        self.gemini = GeminiProvider(settings.gemini_api_key, settings.gemini_models, settings.llm_timeout_s)
         self.ollama = OllamaProvider(settings.ollama_url, settings.ollama_model)
 
     def _order(self) -> list:
@@ -41,8 +41,8 @@ class LLMRouter:
                 errors.append(f"{provider.name}: unavailable")
                 continue
             try:
-                text = provider.generate(system, user, temperature=temperature)
-                return LLMResult(text=text, provider=provider.name)
+                text, label = provider.generate(system, user, temperature=temperature)
+                return LLMResult(text=text, provider=label)
             except ProviderUnavailable as e:
                 errors.append(f"{provider.name}: {e}")
             except ProviderError as e:
@@ -55,7 +55,8 @@ class LLMRouter:
             "policy": self.settings.llm_policy,
             "gemini": {
                 "configured": self.gemini.available(),
-                "model": self.settings.gemini_model,
+                "models": self.settings.gemini_models,
+                "timeout_s": self.settings.llm_timeout_s,
             },
             "ollama": {
                 "server_up": self.ollama.server_up(),

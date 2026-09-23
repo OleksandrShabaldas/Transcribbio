@@ -107,3 +107,34 @@ data class TranscribeRequestDto(
     val denoise: Boolean? = null,
     @SerialName("word_timestamps") val wordTimestamps: Boolean = true,
 )
+
+// ── LLM model chain: discovery + health check (Settings ▸ AI) ──
+@Serializable
+data class LlmModelDto(
+    val name: String,
+    @SerialName("display_name") val displayName: String = "",
+)
+
+@Serializable
+data class LlmModelsDto(
+    val gemini: List<LlmModelDto> = emptyList(),
+    val ollama: List<String> = emptyList(),
+    val error: String? = null,
+)
+
+@Serializable
+data class LlmTestRequestDto(val models: List<String> = emptyList())
+
+@Serializable
+data class LlmTestResultDto(
+    val model: String,
+    val ok: Boolean,
+    @SerialName("latency_s") val latencyS: Double = 0.0,
+    val detail: String = "",
+)
+
+@Serializable
+data class LlmTestResponseDto(
+    val results: List<LlmTestResultDto> = emptyList(),
+    @SerialName("ollama_ready") val ollamaReady: Boolean = false,
+)

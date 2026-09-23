@@ -6,6 +6,8 @@ import com.transcribbio.desktop.core.AppEnvironment
 import com.transcribbio.desktop.core.ConfigStore
 import com.transcribbio.desktop.data.LibraryRepository
 import com.transcribbio.desktop.processing.ProcessingOrchestrator
+import com.transcribbio.desktop.sidecar.LlmModelsDto
+import com.transcribbio.desktop.sidecar.LlmTestResponseDto
 import com.transcribbio.desktop.sidecar.SidecarManager
 import com.transcribbio.desktop.sidecar.SidecarState
 import com.transcribbio.desktop.sync.SyncServer
@@ -34,7 +36,15 @@ sealed interface Screen {
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
-private const val APP_VERSION = "1.0.6"
+/** State of the "Test models" check in Settings ▸ AI. */
+sealed interface LlmTestUi {
+    data object Idle : LlmTestUi
+    data object Testing : LlmTestUi
+    data class Done(val result: LlmTestResponseDto) : LlmTestUi
+    data class Failed(val message: String) : LlmTestUi
+}
+
+private const val APP_VERSION = "1.0.7"
 
 class AppState {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -56,6 +66,12 @@ class AppState {
     val screen: StateFlow<Screen> = _screen.asStateFlow()
 
     val themeMode = MutableStateFlow(ThemeMode.SYSTEM)
+
+    // AI model chain: models the user's key can use, and the last "Test models" result.
+    private val _llmModels = MutableStateFlow<LlmModelsDto?>(null)
+    val llmModels: StateFlow<LlmModelsDto?> = _llmModels.asStateFlow()
+    private val _llmTest = MutableStateFlow<LlmTestUi>(LlmTestUi.Idle)
+    val llmTest: StateFlow<LlmTestUi> = _llmTest.asStateFlow()
 
     private val _offlineProvisionMsg = MutableStateFlow<String?>(null)
     val offlineProvisionMsg: StateFlow<String?> = _offlineProvisionMsg.asStateFlow()
@@ -165,6 +181,9 @@ class AppState {
         _config.value = newConfig
         configStore.save(newConfig)
         val needsRestart = old.geminiApiKey != newConfig.geminiApiKey ||
+            old.geminiModels != newConfig.geminiModels ||
+            old.llmTimeoutS != newConfig.llmTimeoutS ||
+            old.ollamaModel != newConfig.ollamaModel ||
             old.llmPolicy != newConfig.llmPolicy ||
             old.language != newConfig.language ||
             old.whisperModel != newConfig.whisperModel ||
@@ -173,6 +192,22 @@ class AppState {
     }
 
     fun retrySidecar() = scope.launch { sidecar.restart(_config.value) }
+
+    fun refreshLlmModels() = scope.launch {
+        val c = sidecar.client ?: return@launch
+        _llmModels.value = runCatching { c.llmModels() }.getOrElse { LlmModelsDto(error = it.message) }
+    }
+
+    /** Ping each selected model with a tiny request so the user can see which work right now. */
+    fun testLlmModels(models: List<String>) = scope.launch {
+        val c = sidecar.client ?: run {
+            _llmTest.value = LlmTestUi.Failed("The engine is still starting — try again in a few seconds.")
+            return@launch
+        }
+        _llmTest.value = LlmTestUi.Testing
+        _llmTest.value = runCatching { LlmTestUi.Done(c.llmTest(models.filter { it.isNotBlank() })) }
+            .getOrElse { LlmTestUi.Failed(it.message ?: "Test failed") }
+    }
 
     fun provisionOfflineModel() = scope.launch {
         _offlineProvisionMsg.value = "Starting…"

@@ -27,6 +27,11 @@ enum class LlmPolicy {
 data class AppConfig(
     val dataDir: String = AppEnvironment.defaultDataDir().toString(),
     val geminiApiKey: String = "",
+    /** Ordered Gemini chain: primary first, then up to two fallbacks. Individual models get
+     *  retired / overloaded on the free tier, so the engine walks this list until one answers. */
+    val geminiModels: List<String> = DEFAULT_GEMINI_MODELS,
+    /** A model slower than this is abandoned for the next one in the chain. */
+    val llmTimeoutS: Int = 90,
     val llmPolicy: LlmPolicy = LlmPolicy.GEMINI_THEN_OLLAMA,
     val language: String = "sk",
     val whisperModel: String = "large-v3",
@@ -43,6 +48,10 @@ data class AppConfig(
     val desktopName: String = "",      // human-friendly name shown on devices
 ) {
     fun hasGeminiKey() = geminiApiKey.isNotBlank()
+
+    companion object {
+        val DEFAULT_GEMINI_MODELS = listOf("gemini-3.6-flash", "gemini-flash-latest", "gemini-flash-lite-latest")
+    }
 }
 
 class ConfigStore(private val env: AppEnvironment) {

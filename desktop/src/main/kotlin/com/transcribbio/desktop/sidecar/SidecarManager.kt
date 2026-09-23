@@ -60,6 +60,9 @@ class SidecarManager(
         put("TRANSCRIBBIO_DEVICE", config.device)
         put("TRANSCRIBBIO_SIDECAR_TOKEN", token)
         if (config.hasGeminiKey()) put("TRANSCRIBBIO_GEMINI_API_KEY", config.geminiApiKey)
+        config.geminiModels.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }
+            ?.let { put("TRANSCRIBBIO_GEMINI_MODELS", it.joinToString(",")) }
+        put("TRANSCRIBBIO_LLM_TIMEOUT_S", config.llmTimeoutS.toString())
         put("PYTHONUTF8", "1")
         put("PYTHONUNBUFFERED", "1")
     }

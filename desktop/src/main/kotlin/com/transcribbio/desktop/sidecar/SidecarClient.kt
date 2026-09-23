@@ -74,6 +74,16 @@ class SidecarClient(
         }.body()
     }
 
+    suspend fun llmModels(): LlmModelsDto = wrapErrors {
+        http.get(url("/llm/models")) { auth() }.body()
+    }
+
+    suspend fun llmTest(models: List<String>): LlmTestResponseDto = wrapErrors {
+        http.post(url("/llm/test")) {
+            auth(); contentType(ContentType.Application.Json); setBody(LlmTestRequestDto(models))
+        }.body()
+    }
+
     /** Turn an HTTP error into a clean exception carrying the sidecar's own `detail`
      *  message (e.g. "AI provider unavailable: …"), so the UI can explain the real cause
      *  instead of a bare status code. */

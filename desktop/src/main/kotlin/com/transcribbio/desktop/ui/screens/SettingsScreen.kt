@@ -12,10 +12,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -41,14 +45,19 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.transcribbio.desktop.core.AppConfig
 import com.transcribbio.desktop.core.LlmPolicy
+import com.transcribbio.desktop.sidecar.LlmModelsDto
+import com.transcribbio.desktop.sidecar.LlmTestResultDto
 import com.transcribbio.desktop.sidecar.SidecarState
 import com.transcribbio.desktop.sync.SyncServerState
 import com.transcribbio.desktop.ui.AppState
+import com.transcribbio.desktop.ui.LlmTestUi
 import com.transcribbio.desktop.ui.util.languageLabel
 import com.transcribbio.shared.update.UpdateStatus
 
@@ -58,23 +67,34 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
     val syncState by state.syncServer.state.collectAsState()
     val updateStatus by state.updater.status.collectAsState()
     val offlineMsg by state.offlineProvisionMsg.collectAsState()
+    val llmModels by state.llmModels.collectAsState()
+    val llmTest by state.llmTest.collectAsState()
     val saved by state.config.collectAsState()
     var draft by remember { mutableStateOf(state.config.value) }
     var showKey by remember { mutableStateOf(false) }
     var savedTick by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
+    val engineReady = sidecarState is SidecarState.Ready
 
-    // Auto-apply the Gemini key: users kept pasting a key and forgetting to press Save,
-    // so it never reached the engine. Persist + restart the engine shortly after the key
-    // stops changing. Debounced so a paste doesn't restart the engine on every character.
-    LaunchedEffect(draft.geminiApiKey) {
-        if (draft.geminiApiKey != saved.geminiApiKey) {
-            delay(600)
-            if (draft.geminiApiKey != state.config.value.geminiApiKey) {
-                state.saveSettings(draft)
+    // The whole AI section applies automatically (debounced): users kept pasting a key or
+    // picking a model and never pressing Save, so the engine never received it. Only the AI
+    // fields are applied here; other sections still use the Save button at the bottom.
+    LaunchedEffect(draft.geminiApiKey, draft.geminiModels, draft.llmTimeoutS, draft.llmPolicy, draft.ollamaModel) {
+        if (aiDiffers(draft, state.config.value)) {
+            delay(700)
+            val now = state.config.value
+            if (aiDiffers(draft, now)) {
+                state.saveSettings(now.copy(
+                    geminiApiKey = draft.geminiApiKey, geminiModels = draft.geminiModels,
+                    llmTimeoutS = draft.llmTimeoutS, llmPolicy = draft.llmPolicy, ollamaModel = draft.ollamaModel,
+                ))
                 savedTick = true
             }
         }
+    }
+    // Load the models this key can use whenever the engine (re)starts with a key.
+    LaunchedEffect(engineReady, saved.geminiApiKey) {
+        if (engineReady && saved.hasGeminiKey()) state.refreshLlmModels()
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(24.dp),
@@ -100,6 +120,54 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 TextButton(onClick = { onOpenUrl("https://aistudio.google.com/apikey") }) { Text("Open") }
             }
+
+            // ── Model chain ──
+            Spacer(Modifier.height(4.dp))
+            Text("Models", style = MaterialTheme.typography.titleMedium)
+            Text("Tried in this order. If one is retired, busy, out of free quota or too slow, the next one takes over.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val options = modelOptions(llmModels, draft.geminiModels)
+            val results = (llmTest as? LlmTestUi.Done)?.result?.results?.associateBy { it.model } ?: emptyMap()
+            listOf("Primary", "Fallback 1", "Fallback 2").forEachIndexed { i, label ->
+                val current = draft.geminiModels.getOrElse(i) { "" }
+                ModelRow(label, current, options, allowNone = i > 0, result = results[current]) { chosen ->
+                    draft = draft.copy(geminiModels = setModelSlot(draft.geminiModels, i, chosen))
+                }
+            }
+            llmModels?.error?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                val canQuery = engineReady && saved.hasGeminiKey()
+                OutlinedButton(onClick = { state.refreshLlmModels() }, enabled = canQuery) {
+                    Icon(Icons.Default.Refresh, null, Modifier.size(18.dp)); Text("  Refresh list")
+                }
+                OutlinedButton(onClick = { state.testLlmModels(draft.geminiModels) },
+                    enabled = canQuery && llmTest !is LlmTestUi.Testing) {
+                    if (llmTest is LlmTestUi.Testing) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Text("  Testing…")
+                    } else {
+                        Icon(Icons.Default.NetworkCheck, null, Modifier.size(18.dp)); Text("  Test models")
+                    }
+                }
+                when (val t = llmTest) {
+                    is LlmTestUi.Done -> {
+                        val ok = t.result.results.count { it.ok }
+                        Text("$ok of ${t.result.results.size} working right now" +
+                            if (t.result.ollamaReady) " · offline model ready" else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (ok > 0) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
+                    }
+                    is LlmTestUi.Failed -> Text(t.message, style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error)
+                    else -> if (!engineReady) Text("Engine starting…", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            LabeledDropdown("Switch model if slower than",
+                listOf("60" to "60 s", "90" to "90 s (recommended)", "120" to "2 min", "180" to "3 min", "300" to "5 min"),
+                draft.llmTimeoutS.toString()) { draft = draft.copy(llmTimeoutS = it.toInt()) }
+
             Spacer(Modifier.height(4.dp))
             Text("Provider strategy", style = MaterialTheme.typography.titleMedium)
             PolicyOption("Gemini first, local model when offline", LlmPolicy.GEMINI_THEN_OLLAMA, draft.llmPolicy) {
@@ -111,25 +179,14 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
             PolicyOption("Gemini only (always cloud)", LlmPolicy.GEMINI_ONLY, draft.llmPolicy) {
                 draft = draft.copy(llmPolicy = it)
             }
-            // The key now auto-applies (see the LaunchedEffect above) so it can't be lost by
-            // forgetting to save; this button stays for policy changes and as an explicit apply.
             Spacer(Modifier.height(4.dp))
-            val keyUnsaved = draft.geminiApiKey != saved.geminiApiKey
-            val policyUnsaved = draft.llmPolicy != saved.llmPolicy
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { state.saveSettings(draft); savedTick = true }, enabled = keyUnsaved || policyUnsaved) {
-                    Text("Save & apply")
-                }
-                when {
-                    keyUnsaved -> Text("Applying key & restarting engine…", color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.bodyMedium)
-                    policyUnsaved -> Text("Unsaved — click Save & apply", color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.bodyMedium)
-                    draft.hasGeminiKey() -> Text("✓ Key saved — the engine will use Gemini",
-                        color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.bodyMedium)
-                    else -> Text("No key set — AI features need a key or the offline model",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-                }
+            when {
+                aiDiffers(draft, saved) -> Text("Applying & restarting the engine…",
+                    color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
+                draft.hasGeminiKey() -> Text("✓ Saved automatically — the engine uses the models above",
+                    color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.bodyMedium)
+                else -> Text("No key set — AI features need a Gemini key or the offline model",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
             }
         }
 
@@ -170,10 +227,25 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
         }
 
         // ── Offline model ──
-        SettingsCard("Offline model") {
-            Text("Download the local model (${draft.ollamaModel}) so correction & notes work without internet.",
+        SettingsCard("Offline model (last resort)") {
+            Text("Used when Gemini is unreachable (no internet, or every model above failed). " +
+                "Runs locally through Ollama.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val installed = llmModels?.ollama.orEmpty()
+            if (installed.isNotEmpty()) {
+                LabeledDropdown("Local model",
+                    (installed + draft.ollamaModel).distinct().map { it to it },
+                    draft.ollamaModel) { draft = draft.copy(ollamaModel = it) }
+            } else {
+                OutlinedTextField(
+                    value = draft.ollamaModel,
+                    onValueChange = { draft = draft.copy(ollamaModel = it.trim()) },
+                    label = { Text("Local model (Ollama)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = { state.provisionOfflineModel() }) {
@@ -202,17 +274,58 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
 
         // ── Phone & watch sync ──
         SettingsCard("Phone & watch sync") {
-            val line = when (val s = syncState) {
-                is SyncServerState.Running -> "Ready to receive on ${s.host}:${s.port}"
-                is SyncServerState.Failed -> "Error: ${s.reason}"
-                SyncServerState.Stopped -> "Sync is off"
+            val clipboard = LocalClipboardManager.current
+            var copied by remember { mutableStateOf(false) }
+            LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
+            when (val s = syncState) {
+                is SyncServerState.Running -> {
+                    if (s.host == "127.0.0.1") {
+                        Text("Not connected to a network — connect this PC to Wi-Fi to receive recordings.",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                    } else {
+                        val address = "${s.host}:${s.port}"
+                        Text("This PC's address", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            SelectionContainer {
+                                Text(address, style = MaterialTheme.typography.headlineSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                            OutlinedButton(onClick = { clipboard.setText(AnnotatedString(address)); copied = true }) {
+                                Icon(Icons.Default.ContentCopy, null, Modifier.size(18.dp))
+                                Text(if (copied) "  Copied!" else "  Copy")
+                            }
+                        }
+                        val others = s.addresses.filter { it != s.host }
+                        if (others.isNotEmpty()) {
+                            Text("Also reachable at: " + others.joinToString { "$it:${s.port}" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text("On home Wi-Fi the phone finds this PC by itself. If it says it can't, enter the " +
+                            "address above in the phone app: Settings ▸ Desktop connection.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (!s.privateNetwork) {
+                            Text("You're on a public or university network (such as eduroam). These usually stop " +
+                                "phones and computers from reaching each other, so syncing may not work here — " +
+                                "recordings wait safely on the phone and sync once you're both on home Wi-Fi " +
+                                "(or connect this PC to your phone's hotspot).",
+                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                        }
+                        if (s.vpnActive) {
+                            Text("A VPN is active. If the phone can't connect, allow LAN / local-network access " +
+                                "in the VPN's settings or pause it while syncing.",
+                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+                is SyncServerState.Failed -> Text("Error: ${s.reason}", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error)
+                SyncServerState.Stopped -> Text("Sync is off", style = MaterialTheme.typography.bodyMedium)
             }
-            Text(line, style = MaterialTheme.typography.bodyMedium)
             Text("Desktop name: ${draft.desktopName.ifBlank { "Transcribbio Desktop" }}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("Open the Transcribbio app on your phone on the same Wi-Fi — it will find this desktop " +
-                "automatically and its recordings will appear here.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -303,6 +416,70 @@ private fun LabeledDropdown(
                     })
                 }
             }
+        }
+    }
+}
+
+private fun aiDiffers(a: AppConfig, b: AppConfig) =
+    a.geminiApiKey != b.geminiApiKey || a.geminiModels != b.geminiModels ||
+        a.llmTimeoutS != b.llmTimeoutS || a.llmPolicy != b.llmPolicy || a.ollamaModel != b.ollamaModel
+
+/** Put [value] in chain slot [i] (0 = primary). Keeps three slots; a model can occupy only
+ *  one slot, so choosing it again elsewhere clears its old slot. "" means "None". */
+private fun setModelSlot(chain: List<String>, i: Int, value: String): List<String> {
+    val slots = MutableList(3) { chain.getOrElse(it) { "" } }
+    slots[i] = value
+    if (value.isNotBlank()) for (j in slots.indices) if (j != i && slots[j] == value) slots[j] = ""
+    return slots
+}
+
+/** Picker options: the models this key can use (live list), plus whatever is selected. */
+private fun modelOptions(list: LlmModelsDto?, selected: List<String>): List<Pair<String, String>> {
+    val live = list?.gemini?.map { it.name to it.displayName.ifBlank { it.name } }.orEmpty()
+    val base = live.ifEmpty { AppConfig.DEFAULT_GEMINI_MODELS.map { it to it } }
+    val extra = selected.filter { s -> s.isNotBlank() && base.none { it.first == s } }
+        .map { it to if (live.isNotEmpty()) "not available for your key" else it }
+    return base + extra
+}
+
+@Composable
+private fun ModelRow(
+    label: String,
+    selected: String,
+    options: List<Pair<String, String>>,
+    allowNone: Boolean,
+    result: LlmTestResultDto?,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.width(110.dp))
+        Box {
+            OutlinedButton(onClick = { expanded = true }) {
+                Text(selected.ifBlank { "None" })
+                Icon(Icons.Default.ArrowDropDown, null, Modifier.size(20.dp))
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                if (allowNone) DropdownMenuItem(text = { Text("None") }, onClick = { onSelect(""); expanded = false })
+                options.forEach { (name, display) ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(name)
+                                if (display != name) Text(display, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        },
+                        onClick = { onSelect(name); expanded = false },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        result?.let {
+            Text(if (it.ok) "✓ works · ${it.latencyS}s" else "✗ ${it.detail}",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (it.ok) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
         }
     }
 }

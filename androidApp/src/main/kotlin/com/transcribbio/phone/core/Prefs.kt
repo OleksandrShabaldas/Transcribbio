@@ -26,7 +26,28 @@ class Prefs(context: Context) {
     private val _desktopDeviceId = MutableStateFlow(sp.getString("desktopDeviceId", "") ?: "")
     val desktopDeviceId: StateFlow<String> = _desktopDeviceId.asStateFlow()
 
+    /** Desktop address typed by the user ("host:port"), for networks where auto-discovery
+     *  is blocked (e.g. university Wi-Fi). Empty = rely on discovery. */
+    private val _manualAddress = MutableStateFlow(sp.getString("manualAddress", "") ?: "")
+    val manualAddress: StateFlow<String> = _manualAddress.asStateFlow()
+
     val isPaired: Boolean get() = _token.value.isNotBlank()
+
+    fun setManualAddress(value: String) {
+        sp.edit().putString("manualAddress", value.trim()).apply()
+        _manualAddress.value = value.trim()
+    }
+
+    /** Last desktop address that worked — tried when discovery finds nothing. */
+    fun lastEndpoint(): Pair<String, Int>? {
+        val host = sp.getString("lastHost", null)?.takeIf { it.isNotBlank() } ?: return null
+        val port = sp.getInt("lastPort", 0)
+        return if (port > 0) host to port else null
+    }
+
+    fun setLastEndpoint(host: String, port: Int) {
+        sp.edit().putString("lastHost", host).putInt("lastPort", port).apply()
+    }
 
     fun setLanguage(value: String) {
         sp.edit().putString("language", value).apply()

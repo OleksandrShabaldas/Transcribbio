@@ -8,6 +8,7 @@ import com.transcribbio.shared.model.DeviceKind
 import com.transcribbio.shared.model.Lecture
 import com.transcribbio.shared.sync.LectureSummaryDto
 import com.transcribbio.shared.sync.PairRequestDto
+import com.transcribbio.shared.sync.SyncProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,11 +46,18 @@ class SyncManager(
 
     suspend fun syncNow(): Boolean = mutex.withLock {
         _state.value = SyncUiState.Discovering
-        val ep = discovery.discover() ?: run {
-            _state.value = SyncUiState.Error("Desktop not found on this Wi-Fi")
+        val ep = resolveEndpoint() ?: run {
+            _state.value = SyncUiState.Error(
+                "Couldn't reach your desktop. Make sure Transcribbio is open on the PC. University and " +
+                    "public Wi-Fi (like eduroam) often block devices from seeing each other — if you're on " +
+                    "the same network, enter the PC's address in Settings ▸ Desktop connection."
+            )
             return false
         }
-        _endpoint.value = ep
+
+        // Paired with a different PC before? Its token won't work here — pair again.
+        val known = prefs.desktopDeviceId.value
+        if (known.isNotBlank() && ep.deviceId.isNotBlank() && ep.deviceId != known) prefs.clearPairing()
 
         var token = prefs.token.value
         if (token.isBlank()) {
@@ -88,18 +96,51 @@ class SyncManager(
     }
 
     suspend fun fetchLectures(): List<LectureSummaryDto> {
-        val ep = _endpoint.value ?: discovery.discover()?.also { _endpoint.value = it } ?: return emptyList()
+        val ep = _endpoint.value ?: resolveEndpoint() ?: return emptyList()
         val token = prefs.token.value
         if (token.isBlank()) return emptyList()
         return runCatching { client.listLectures(ep.host, ep.port, token).lectures }.getOrElse { emptyList() }
     }
 
     suspend fun fetchLecture(id: String): Lecture? {
-        val ep = _endpoint.value ?: discovery.discover()?.also { _endpoint.value = it } ?: return null
+        val ep = _endpoint.value ?: resolveEndpoint() ?: return null
         val token = prefs.token.value
         if (token.isBlank()) return null
         return runCatching { client.getLecture(ep.host, ep.port, token, id) }.getOrNull()
     }
 
+    /** Where is the desktop? 1) the address the user typed (works where discovery is blocked),
+     *  2) mDNS auto-discovery, 3) the last address that worked. */
+    private suspend fun resolveEndpoint(): DesktopEndpoint? {
+        parseAddress(prefs.manualAddress.value)?.let { (h, p) -> probe(h, p)?.let { return found(it) } }
+        discovery.discover()?.let { return found(it) }
+        prefs.lastEndpoint()?.let { (h, p) -> probe(h, p)?.let { return found(it) } }
+        return null
+    }
+
+    private fun found(ep: DesktopEndpoint): DesktopEndpoint {
+        prefs.setLastEndpoint(ep.host, ep.port)
+        _endpoint.value = ep
+        return ep
+    }
+
+    private suspend fun probe(host: String, port: Int): DesktopEndpoint? =
+        client.ping(host, port)?.let { DesktopEndpoint(host, port, it.desktopName, it.desktopDeviceId) }
+
+    /** Check an address typed in Settings; returns the desktop it reached, or null. */
+    suspend fun testAddress(raw: String): DesktopEndpoint? =
+        parseAddress(raw)?.let { (h, p) -> probe(h, p) }?.also { found(it) }
+
     private fun deviceName(): String = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { "Phone" }
+
+    companion object {
+        /** Accepts "192.168.1.20:47815", "192.168.1.20" (default port) or "http://…/" forms. */
+        fun parseAddress(raw: String): Pair<String, Int>? {
+            val s = raw.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
+            if (s.isBlank()) return null
+            val host = s.substringBefore(':').trim()
+            val port = s.substringAfter(':', "").trim().toIntOrNull() ?: SyncProtocol.DEFAULT_PORT
+            return if (host.isNotBlank() && port in 1..65535) host to port else null
+        }
+    }
 }

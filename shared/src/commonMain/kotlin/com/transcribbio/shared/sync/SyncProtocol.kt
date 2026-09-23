@@ -9,6 +9,10 @@ object SyncProtocol {
     const val SERVICE_TYPE = "_transcribbio._tcp"          // Android NsdManager form
     const val SERVICE_TYPE_JMDNS = "_transcribbio._tcp.local."
 
+    /** Fixed port the desktop listens on (falls back to a random one only if it's taken),
+     *  so the address a user types into the phone stays valid across restarts. */
+    const val DEFAULT_PORT = 47815
+
     const val TOKEN_HEADER = "X-Transcribbio-Token"
     const val TITLE_HEADER = "X-Lecture-Title"
     const val LANGUAGE_HEADER = "X-Lecture-Language"

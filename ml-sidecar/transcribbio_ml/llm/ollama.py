@@ -30,6 +30,10 @@ class OllamaProvider:
     def server_up(self) -> bool:
         return self._tags() is not None
 
+    def tags(self) -> list[str]:
+        """Locally installed Ollama models (empty if the server isn't running)."""
+        return self._tags() or []
+
     def has_model(self) -> bool:
         tags = self._tags()
         if tags is None:
@@ -70,7 +74,7 @@ class OllamaProvider:
         temperature: float = 0.2,
         num_ctx: int = 8192,
         timeout: float = 600.0,
-    ) -> str:
+    ) -> tuple[str, str]:
         if not self.server_up():
             raise ProviderUnavailable("Ollama server is not running")
         try:
@@ -96,4 +100,4 @@ class OllamaProvider:
 
         if not content.strip():
             raise ProviderError("Ollama returned an empty response")
-        return content.strip()
+        return content.strip(), f"ollama:{self.model}"

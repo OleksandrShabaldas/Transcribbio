@@ -13,6 +13,7 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.onUpload
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -38,8 +39,17 @@ class SyncClient {
 
     private fun base(host: String, port: Int) = "http://$host:$port"
 
-    suspend fun ping(host: String, port: Int): PingDto? =
-        runCatching { http.get("${base(host, port)}/api/ping").body<PingDto>() }.getOrNull()
+    /** Is a Transcribbio desktop answering at host:port? Short timeout so a stale or wrong
+     *  address fails fast instead of stalling a sync for the default 8 s. */
+    suspend fun ping(host: String, port: Int, timeoutMs: Long = 3000): PingDto? = runCatching {
+        http.get("${base(host, port)}/api/ping") {
+            timeout {
+                connectTimeoutMillis = timeoutMs
+                requestTimeoutMillis = timeoutMs + 2000
+                socketTimeoutMillis = timeoutMs + 2000
+            }
+        }.body<PingDto>().takeIf { it.app == "transcribbio" }
+    }.getOrNull()
 
     suspend fun pair(host: String, port: Int, req: PairRequestDto): PairResponseDto =
         http.post("${base(host, port)}/api/pair") {

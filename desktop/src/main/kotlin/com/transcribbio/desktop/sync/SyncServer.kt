@@ -25,19 +25,34 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.net.Inet4Address
 import java.net.InetAddress
-import java.net.NetworkInterface
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 
 sealed interface SyncServerState {
     data object Stopped : SyncServerState
-    data class Running(val host: String, val port: Int) : SyncServerState
+    data class Running(
+        val host: String,
+        val port: Int,
+        /** Every usable address of this PC (the phone can be pointed at any of them). */
+        val addresses: List<String> = emptyList(),
+        /** False on networks that hand out public addresses (e.g. eduroam), which usually
+         *  block devices from reaching each other and always block auto-discovery. */
+        val privateNetwork: Boolean = true,
+        val vpnActive: Boolean = false,
+    ) : SyncServerState
     data class Failed(val reason: String) : SyncServerState
 }
 
@@ -52,12 +67,14 @@ class SyncServer(
 
     private var server: EmbeddedServer<*, *>? = null
     private var jmdns: JmDNS? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var watchJob: Job? = null
 
     fun start() {
         if (_state.value is SyncServerState.Running) return
         try {
-            val port = freePort()
-            val host = localIpv4() ?: "127.0.0.1"
+            val port = preferredPort()
+            val host = NetworkAddresses.primaryIpv4() ?: "127.0.0.1"
             server = embeddedServer(CIO, port = port, host = "0.0.0.0") {
                 install(ContentNegotiation) { json() }
                 routing {
@@ -107,13 +124,16 @@ class SyncServer(
             }.also { it.start(wait = false) }
 
             registerMdns(host, port)
-            _state.value = SyncServerState.Running(host, port)
+            _state.value = runningState(host, port)
+            watchNetwork(port)
         } catch (e: Exception) {
             _state.value = SyncServerState.Failed(e.message ?: "sync server failed to start")
         }
     }
 
     fun stop() {
+        watchJob?.cancel()
+        watchJob = null
         runCatching { jmdns?.unregisterAllServices(); jmdns?.close() }
         jmdns = null
         runCatching { server?.stop(500, 1000) }
@@ -128,6 +148,35 @@ class SyncServer(
             return false
         }
         return true
+    }
+
+    private fun runningState(host: String, port: Int) = SyncServerState.Running(
+        host = host,
+        port = port,
+        addresses = (listOf(host) + NetworkAddresses.candidates().map { it.first }).distinct()
+            .filter { it != "127.0.0.1" },
+        privateNetwork = NetworkAddresses.isPrivate(host),
+        vpnActive = NetworkAddresses.vpnActive(),
+    )
+
+    /** A laptop moves between networks (lecture hall → home). The HTTP server listens on all
+     *  interfaces, but mDNS is bound to one address, so re-advertise when the address changes. */
+    private fun watchNetwork(port: Int) {
+        watchJob?.cancel()
+        watchJob = scope.launch {
+            while (isActive) {
+                delay(15_000)
+                val current = (_state.value as? SyncServerState.Running) ?: continue
+                val host = NetworkAddresses.primaryIpv4() ?: "127.0.0.1"
+                val next = runningState(host, port)
+                if (host != current.host) {
+                    runCatching { jmdns?.unregisterAllServices(); jmdns?.close() }
+                    jmdns = null
+                    if (host != "127.0.0.1") registerMdns(host, port)
+                }
+                if (next != current) _state.value = next
+            }
+        }
     }
 
     private fun registerMdns(host: String, port: Int) {
@@ -148,15 +197,13 @@ class SyncServer(
     companion object {
         fun freePort(): Int = ServerSocket(0).use { it.localPort }
 
-        fun localIpv4(): String? {
-            return runCatching {
-                NetworkInterface.getNetworkInterfaces().toList()
-                    .filter { it.isUp && !it.isLoopback && !it.isVirtual }
-                    .flatMap { it.inetAddresses.toList() }
-                    .filterIsInstance<Inet4Address>()
-                    .firstOrNull { it.isSiteLocalAddress }
-                    ?.hostAddress
-            }.getOrNull()
-        }
+        /** The fixed sync port if it's free, else any free port. */
+        fun preferredPort(): Int = runCatching {
+            ServerSocket().use { s ->
+                s.reuseAddress = false
+                s.bind(InetSocketAddress(SyncProtocol.DEFAULT_PORT))
+                SyncProtocol.DEFAULT_PORT
+            }
+        }.getOrElse { freePort() }
     }
 }

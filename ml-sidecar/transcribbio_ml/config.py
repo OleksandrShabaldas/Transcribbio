@@ -21,7 +21,7 @@ def _default_data_dir() -> Path:
         return Path(env)
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        return Path(local) / "Transcribbio"
+        return Path(local) / "TranscribbioData"
     return Path.home() / ".transcribbio"
 
 
@@ -51,7 +51,13 @@ class Settings:
     # ── LLM providers ──
     # "gemini" primary with "ollama" fallback, "ollama" only, or "gemini" only.
     llm_policy: str = "gemini_then_ollama"
-    gemini_model: str = "gemini-2.0-flash"
+    # Ordered Gemini chain: primary first, then fallbacks (see llm/gemini.py). Individual
+    # models get retired or overloaded on the free tier, so never rely on just one.
+    gemini_models: list[str] = field(default_factory=lambda: [
+        "gemini-3.6-flash", "gemini-flash-latest", "gemini-flash-lite-latest",
+    ])
+    # A model slower than this (seconds) is abandoned for the next one in the chain.
+    llm_timeout_s: float = 90.0
     gemini_api_key: Optional[str] = None
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5:7b-instruct"
@@ -102,7 +108,7 @@ class Settings:
     _SERIALIZABLE = {
         "whisper_model", "device", "compute_type_cuda", "compute_type_cpu",
         "default_language", "beam_size", "denoise_snr_threshold_db",
-        "target_rms_dbfs", "llm_policy", "gemini_model", "ollama_url",
+        "target_rms_dbfs", "llm_policy", "gemini_models", "llm_timeout_s", "ollama_url",
         "ollama_model", "correction_chunk_words", "correction_overlap_words",
     }
 
@@ -124,7 +130,6 @@ class Settings:
             "TRANSCRIBBIO_DEVICE": "device",
             "TRANSCRIBBIO_LANGUAGE": "default_language",
             "TRANSCRIBBIO_LLM_POLICY": "llm_policy",
-            "TRANSCRIBBIO_GEMINI_MODEL": "gemini_model",
             "TRANSCRIBBIO_GEMINI_API_KEY": "gemini_api_key",
             "TRANSCRIBBIO_OLLAMA_URL": "ollama_url",
             "TRANSCRIBBIO_OLLAMA_MODEL": "ollama_model",
@@ -133,6 +138,19 @@ class Settings:
             val = os.environ.get(env_key)
             if val:
                 setattr(self, attr, val)
+
+        # Model chain: comma-separated list (legacy single-model var still accepted).
+        chain = os.environ.get("TRANSCRIBBIO_GEMINI_MODELS") or os.environ.get("TRANSCRIBBIO_GEMINI_MODEL")
+        if chain:
+            models = [m.strip() for m in chain.split(",") if m.strip()]
+            if models:
+                self.gemini_models = models
+        timeout = os.environ.get("TRANSCRIBBIO_LLM_TIMEOUT_S")
+        if timeout:
+            try:
+                self.llm_timeout_s = max(15.0, float(timeout))
+            except ValueError:
+                pass
 
         port = os.environ.get("TRANSCRIBBIO_PORT")
         if port and port.isdigit():

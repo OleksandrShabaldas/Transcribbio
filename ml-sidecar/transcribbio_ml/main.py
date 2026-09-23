@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -20,6 +21,7 @@ from .llm.router import LLMRouter
 from .jobs import JobManager
 from .models import (
     CorrectRequest, CorrectResponse, FlashcardModel, JobRef, JobStatus,
+    LlmModelInfo, LlmModelsResponse, LlmTestRequest, LlmTestResponse, LlmTestResult,
     MaterialRequest, MaterialResponse, ProcessRequest, TranscribeRequest,
     TranscriptionResponse,
 )
@@ -114,6 +116,31 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             flashcards=[FlashcardModel(question=c.question, answer=c.answer)
                         for c in mr.flashcards] if mr.flashcards else None,
         )
+
+    # ── LLM model chain: what's available, and does each model work right now? ──
+    @app.get("/llm/models", response_model=LlmModelsResponse, dependencies=[Depends(auth)])
+    def llm_models() -> LlmModelsResponse:
+        resp = LlmModelsResponse(ollama=router.ollama.tags())
+        if not router.gemini.api_key:
+            resp.error = "No Gemini API key set"
+            return resp
+        try:
+            resp.gemini = [LlmModelInfo(**d) for d in router.gemini.list_text_models()]
+        except Exception as e:  # noqa: BLE001 - surface, don't crash
+            resp.error = f"Couldn't list Gemini models: {e}"[:300]
+        return resp
+
+    @app.post("/llm/test", response_model=LlmTestResponse, dependencies=[Depends(auth)])
+    def llm_test(req: LlmTestRequest) -> LlmTestResponse:
+        models = [m.strip() for m in (req.models or settings.gemini_models) if m and m.strip()]
+        if not router.gemini.api_key:
+            results = [LlmTestResult(model=m, ok=False, detail="No Gemini API key set") for m in models]
+        else:
+            timeout = max(15.0, min(30.0, settings.llm_timeout_s))
+            with ThreadPoolExecutor(max_workers=max(1, min(4, len(models)))) as ex:
+                results = [LlmTestResult(**r) for r in
+                           ex.map(lambda m: router.gemini.test_model(m, timeout_s=timeout), models)]
+        return LlmTestResponse(results=results, ollama_ready=router.ollama.has_model())
 
     # ── Full pipeline as a polled job ──────────────────────────────────────────
     @app.post("/jobs", response_model=JobRef, dependencies=[Depends(auth)])

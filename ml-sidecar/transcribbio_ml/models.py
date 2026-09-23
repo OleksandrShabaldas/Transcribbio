@@ -102,3 +102,31 @@ class JobStatus(BaseModel):
     message: str = ""
     result: Optional[ProcessResult] = None
     error: Optional[str] = None
+
+
+# ── LLM model chain: discovery + health check (Settings ▸ AI) ──────────────────
+class LlmModelInfo(BaseModel):
+    name: str
+    display_name: str = ""
+
+
+class LlmModelsResponse(BaseModel):
+    gemini: list[LlmModelInfo] = []
+    ollama: list[str] = []
+    error: Optional[str] = None
+
+
+class LlmTestRequest(BaseModel):
+    models: list[str] = []
+
+
+class LlmTestResult(BaseModel):
+    model: str
+    ok: bool
+    latency_s: float = 0.0
+    detail: str = ""
+
+
+class LlmTestResponse(BaseModel):
+    results: list[LlmTestResult] = []
+    ollama_ready: bool = False
