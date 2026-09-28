@@ -30,6 +30,7 @@ class SyncManager(
     private val context: Context,
     private val prefs: Prefs,
     private val store: RecordingStore,
+    private val drive: DriveRelay,
     private val scope: CoroutineScope,
 ) {
     private val discovery = Discovery(context)
@@ -47,10 +48,13 @@ class SyncManager(
     suspend fun syncNow(): Boolean = mutex.withLock {
         _state.value = SyncUiState.Discovering
         val ep = resolveEndpoint() ?: run {
+            // PC not reachable directly — hand the recordings to the Google Drive relay if set up.
+            uploadViaCloud()?.let { return it }
             _state.value = SyncUiState.Error(
                 "Couldn't reach your desktop. Make sure Transcribbio is open on the PC. University and " +
-                    "public Wi-Fi (like eduroam) often block devices from seeing each other — if you're on " +
-                    "the same network, enter the PC's address in Settings ▸ Desktop connection."
+                    "public Wi-Fi (like eduroam) often block devices from seeing each other — connect Google " +
+                    "Drive in Settings ▸ Cloud relay so recordings reach your PC from anywhere, or enter the " +
+                    "PC's address in Settings ▸ Desktop connection."
             )
             return false
         }
@@ -91,6 +95,9 @@ class SyncManager(
                 store.setError(rec.id, it.message ?: "upload failed")
             }
         }
+        if (drive.isConnected && store.items.value.any { it.inCloud }) {
+            drive.silentToken()?.let { runCatching { confirmCloudPickups(it) } }
+        }
         _state.value = SyncUiState.Done(ep.name, uploaded, System.currentTimeMillis())
         return true
     }
@@ -113,9 +120,57 @@ class SyncManager(
      *  2) mDNS auto-discovery, 3) the last address that worked. */
     private suspend fun resolveEndpoint(): DesktopEndpoint? {
         parseAddress(prefs.manualAddress.value)?.let { (h, p) -> probe(h, p)?.let { return found(it) } }
-        discovery.discover()?.let { return found(it) }
+        // Discovery can succeed where connections are still blocked, so confirm it answers.
+        discovery.discover()?.let { d -> probe(d.host, d.port)?.let { return found(it) } }
         prefs.lastEndpoint()?.let { (h, p) -> probe(h, p)?.let { return found(it) } }
         return null
+    }
+
+    /** Upload pending recordings to the Drive mailbox. Returns null when the relay isn't
+     *  connected (caller shows the "can't reach desktop" message instead). */
+    private suspend fun uploadViaCloud(): Boolean? {
+        if (!drive.isConnected) return null
+        drive.silentToken()?.let { confirmCloudPickups(it) }
+        val pending = store.pendingUploads()
+        if (pending.isEmpty()) {
+            _state.value = SyncUiState.Done("Google Drive", 0, System.currentTimeMillis())
+            return true
+        }
+        if (drive.onMeteredNetwork() && !prefs.cloudOnMobileData.value) {
+            _state.value = SyncUiState.Error("${pending.size} recording(s) will upload to Google Drive on Wi-Fi " +
+                "(uploading over mobile data is off in Settings ▸ Cloud relay).")
+            return false
+        }
+        var uploaded = 0
+        pending.forEachIndexed { i, rec ->
+            val file = store.audioFile(rec)
+            if (!file.exists()) {
+                store.setError(rec.id, "recording file missing")
+                return@forEachIndexed
+            }
+            // Fresh token per recording: a long upload queue can outlive a 1-hour token.
+            val token = drive.silentToken() ?: run {
+                _state.value = SyncUiState.Error("Google Drive needs reconnecting — open Settings ▸ Cloud relay.")
+                return false
+            }
+            _state.value = SyncUiState.Uploading(i + 1, pending.size, 0f)
+            runCatching {
+                drive.upload(token, rec, file) { f -> _state.value = SyncUiState.Uploading(i + 1, pending.size, f) }
+            }.onSuccess { fileId ->
+                store.markUploadedToCloud(rec.id, fileId); uploaded++
+            }.onFailure {
+                store.setError(rec.id, "Google Drive: ${it.message ?: "upload failed"}")
+            }
+        }
+        _state.value = SyncUiState.Done("Google Drive (your PC picks it up)", uploaded, System.currentTimeMillis())
+        return uploaded > 0 || pending.isEmpty()
+    }
+
+    /** Recordings the PC has already pulled out of Drive count as synced on the phone too. */
+    private suspend fun confirmCloudPickups(token: String) {
+        store.items.value.filter { it.inCloud }.forEach { rec ->
+            if (runCatching { drive.pickedUp(token, rec.id) }.getOrDefault(false)) store.markUploaded(rec.id, "")
+        }
     }
 
     private fun found(ep: DesktopEndpoint): DesktopEndpoint {

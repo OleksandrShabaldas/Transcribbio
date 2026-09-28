@@ -5,6 +5,7 @@ import com.transcribbio.desktop.core.AppConfig
 import com.transcribbio.desktop.core.AppEnvironment
 import com.transcribbio.desktop.core.ConfigStore
 import com.transcribbio.desktop.data.LibraryRepository
+import com.transcribbio.desktop.drive.DriveInbox
 import com.transcribbio.desktop.processing.ProcessingOrchestrator
 import com.transcribbio.desktop.sidecar.LlmModelsDto
 import com.transcribbio.desktop.sidecar.LlmTestResponseDto
@@ -44,7 +45,7 @@ sealed interface LlmTestUi {
     data class Failed(val message: String) : LlmTestUi
 }
 
-private const val APP_VERSION = "1.0.7"
+private const val APP_VERSION = "1.0.8"
 
 class AppState {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -56,6 +57,7 @@ class AppState {
     val orchestrator: ProcessingOrchestrator
     val recorder = AudioRecorder()
     val syncServer: SyncServer
+    val driveInbox: DriveInbox
     val updater: DesktopUpdater
     val appVersion: String = APP_VERSION
 
@@ -102,11 +104,14 @@ class AppState {
             configStore.save(cfg)
         }
         syncServer = SyncServer(repo, { _config.value }, APP_VERSION) { id -> maybeProcess(id) }
+        driveInbox = DriveInbox(scope, env.dataDir, repo, { _config.value }, ::updateConfig,
+            onImported = { id -> maybeProcess(id) })
         updater = DesktopUpdater(APP_VERSION, env.dataDir.toFile(), scope)
 
         repo.loadAll()
         scope.launch { sidecar.start(_config.value) }
         if (cfg.syncEnabled) syncServer.start()
+        driveInbox.start()
         updater.checkOnLaunch()
     }
 
@@ -176,10 +181,18 @@ class AppState {
     }
 
     // ── Settings ──
-    fun saveSettings(newConfig: AppConfig) {
-        val old = _config.value
-        _config.value = newConfig
-        configStore.save(newConfig)
+    fun saveSettings(draft: AppConfig) {
+        // Drive credentials are owned by DriveInbox; a (possibly stale) settings draft must never
+        // overwrite them — otherwise pressing Save could silently sign the relay out.
+        lateinit var old: AppConfig
+        updateConfig { cur ->
+            old = cur
+            draft.copy(
+                driveClientId = cur.driveClientId, driveClientSecret = cur.driveClientSecret,
+                driveRefreshToken = cur.driveRefreshToken, driveAccount = cur.driveAccount,
+            )
+        }
+        val newConfig = _config.value
         val needsRestart = old.geminiApiKey != newConfig.geminiApiKey ||
             old.geminiModels != newConfig.geminiModels ||
             old.llmTimeoutS != newConfig.llmTimeoutS ||
@@ -189,6 +202,14 @@ class AppState {
             old.whisperModel != newConfig.whisperModel ||
             old.device != newConfig.device
         if (needsRestart) scope.launch { sidecar.restart(newConfig) }
+    }
+
+    private fun updateConfig(transform: (AppConfig) -> AppConfig) {
+        synchronized(this) {
+            val c = transform(_config.value)
+            _config.value = c
+            configStore.save(c)
+        }
     }
 
     fun retrySidecar() = scope.launch { sidecar.restart(_config.value) }

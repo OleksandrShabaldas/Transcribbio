@@ -31,7 +31,25 @@ class Prefs(context: Context) {
     private val _manualAddress = MutableStateFlow(sp.getString("manualAddress", "") ?: "")
     val manualAddress: StateFlow<String> = _manualAddress.asStateFlow()
 
+    /** Google account connected for the Drive relay ("" = not connected). */
+    private val _driveAccount = MutableStateFlow(sp.getString("driveAccount", "") ?: "")
+    val driveAccount: StateFlow<String> = _driveAccount.asStateFlow()
+
+    /** Allow Drive relay uploads over metered (mobile) data. Off by default: recordings are large. */
+    private val _cloudOnMobileData = MutableStateFlow(sp.getBoolean("cloudOnMobileData", false))
+    val cloudOnMobileData: StateFlow<Boolean> = _cloudOnMobileData.asStateFlow()
+
     val isPaired: Boolean get() = _token.value.isNotBlank()
+
+    fun setDriveAccount(value: String) {
+        sp.edit().putString("driveAccount", value).apply()
+        _driveAccount.value = value
+    }
+
+    fun setCloudOnMobileData(value: Boolean) {
+        sp.edit().putBoolean("cloudOnMobileData", value).apply()
+        _cloudOnMobileData.value = value
+    }
 
     fun setManualAddress(value: String) {
         sp.edit().putString("manualAddress", value.trim()).apply()

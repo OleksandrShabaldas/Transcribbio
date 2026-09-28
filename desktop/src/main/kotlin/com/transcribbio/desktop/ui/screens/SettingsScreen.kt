@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.NetworkCheck
@@ -52,6 +53,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.transcribbio.desktop.core.AppConfig
 import com.transcribbio.desktop.core.LlmPolicy
+import com.transcribbio.desktop.drive.DriveState
 import com.transcribbio.desktop.sidecar.LlmModelsDto
 import com.transcribbio.desktop.sidecar.LlmTestResultDto
 import com.transcribbio.desktop.sidecar.SidecarState
@@ -62,7 +64,7 @@ import com.transcribbio.desktop.ui.util.languageLabel
 import com.transcribbio.shared.update.UpdateStatus
 
 @Composable
-fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
+fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit, pickFile: (String) -> java.nio.file.Path?) {
     val sidecarState by state.sidecar.state.collectAsState()
     val syncState by state.syncServer.state.collectAsState()
     val updateStatus by state.updater.status.collectAsState()
@@ -330,6 +332,78 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
+        // ── Cloud relay (Google Drive) ──
+        SettingsCard("Cloud relay (Google Drive)") {
+            val drive by state.driveInbox.state.collectAsState()
+            val clipboard = LocalClipboardManager.current
+            var showSetup by remember { mutableStateOf(false) }
+            var loadError by remember { mutableStateOf<String?>(null) }
+            val loadClient: () -> Unit = {
+                val path = pickFile("Select the downloaded Google client file (.json)")
+                if (path != null) loadError = state.driveInbox.loadClientFile(path.toFile()).exceptionOrNull()?.message
+            }
+            Text("For when the phone can't reach this PC over Wi-Fi (e.g. on university Wi-Fi): the phone drops " +
+                "each recording into a private, hidden folder in your Google Drive, this PC picks it up within a " +
+                "minute, transcribes it and deletes it from Drive. Free — nothing is left in your Drive.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            when (val d = drive) {
+                DriveState.NotSetUp -> {
+                    Text("One-time setup (about 10 minutes)", style = MaterialTheme.typography.titleMedium)
+                    DriveSetupSteps(onOpenUrl) { clipboard.setText(AnnotatedString(it)) }
+                    Button(onClick = loadClient) { Text("Load client file…") }
+                }
+                DriveState.NotConnected -> {
+                    Text("Google client file loaded. Now connect your Google account:",
+                        style = MaterialTheme.typography.bodyMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = { state.driveInbox.connect(onOpenUrl) }) {
+                            Icon(Icons.Default.Cloud, null, Modifier.size(18.dp)); Text("  Connect Google Drive")
+                        }
+                        TextButton(onClick = { showSetup = !showSetup }) { Text(if (showSetup) "Hide setup steps" else "Setup steps") }
+                    }
+                }
+                DriveState.Connecting -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("  Approve access in the browser window that just opened…", style = MaterialTheme.typography.bodyMedium)
+                }
+                is DriveState.Connected -> {
+                    Text("✓ Connected as ${d.account}", style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.secondary)
+                    val clock = remember(d.lastCheckMillis) {
+                        java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+                            .format(java.time.Instant.ofEpochMilli(d.lastCheckMillis).atZone(java.time.ZoneId.systemDefault()))
+                    }
+                    val status = when {
+                        d.checking -> "Checking Google Drive…"
+                        d.lastError != null -> "Last check failed: ${d.lastError}"
+                        d.lastCheckMillis > 0 -> "Last checked $clock — checks every minute" +
+                            if (d.pickedUp > 0) " · ${d.pickedUp} recording(s) picked up" else ""
+                        else -> "Checks every minute"
+                    }
+                    Text(status, style = MaterialTheme.typography.bodyMedium,
+                        color = if (d.lastError != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = { state.driveInbox.checkNow() }, enabled = !d.checking) { Text("Check now") }
+                        TextButton(onClick = { state.driveInbox.disconnect() }) { Text("Disconnect") }
+                    }
+                    Text("On the phone: Settings ▸ Cloud relay ▸ Connect Google Drive (same Google account).",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                is DriveState.Failed -> {
+                    Text(d.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = { state.driveInbox.connect(onOpenUrl) }) { Text("Connect again") }
+                        TextButton(onClick = { showSetup = !showSetup }) { Text(if (showSetup) "Hide setup steps" else "Setup steps") }
+                    }
+                }
+            }
+            if (showSetup && drive !is DriveState.NotSetUp) {
+                DriveSetupSteps(onOpenUrl) { clipboard.setText(AnnotatedString(it)) }
+                OutlinedButton(onClick = loadClient) { Text("Load a different client file…") }
+            }
+            loadError?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+        }
+
         // ── Updates ──
         SettingsCard("Updates") {
             val u = updateStatus
@@ -480,6 +554,53 @@ private fun ModelRow(
             Text(if (it.ok) "✓ works · ${it.latencyS}s" else "✗ ${it.detail}",
                 style = MaterialTheme.typography.labelLarge,
                 color = if (it.ok) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
+        }
+    }
+}
+
+/** SHA-1 of the release signing certificate the phone APK is signed with (public, not a secret).
+ *  Google needs it to recognise the phone app in the Android OAuth client. */
+private const val PHONE_PACKAGE = "com.transcribbio.phone"
+private const val PHONE_SHA1 = "4A:0C:EF:D0:EE:8E:17:6F:F9:8C:F5:96:BC:BA:59:6F:84:29:B2:E2"
+
+/** The one-time Google Cloud setup for the Drive relay, as numbered steps with links. */
+@Composable
+private fun DriveSetupSteps(onOpenUrl: (String) -> Unit, onCopy: (String) -> Unit) {
+    data class Step(val text: String, val url: String? = null, val copy: List<Pair<String, String>> = emptyList())
+    val steps = listOf(
+        Step("Open Google Cloud, sign in with the Google account you use on your phone, create a project " +
+            "called \"Transcribbio\" when asked, and enable the Google Drive API.",
+            "https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com"),
+        Step("Set up sign-in: Get started → App name \"Transcribbio\", your email → Audience \"External\" → " +
+            "your email as contact → Create.",
+            "https://console.cloud.google.com/auth/overview"),
+        Step("Data access → Add or remove scopes → search \"drive.appdata\" → tick it → Update → Save.",
+            "https://console.cloud.google.com/auth/scopes"),
+        Step("Audience → Publish app → Confirm. No review is needed (Transcribbio only asks for its own hidden " +
+            "folder), and it stops the access from expiring every 7 days.",
+            "https://console.cloud.google.com/auth/audience"),
+        Step("Clients → Create client → Application type \"Android\" → paste these → Create:",
+            "https://console.cloud.google.com/auth/clients",
+            listOf("Package name" to PHONE_PACKAGE, "SHA-1" to PHONE_SHA1)),
+        Step("Create client again → Application type \"Desktop app\" → Create → Download JSON.",
+            "https://console.cloud.google.com/auth/clients"),
+        Step("Click \"Load client file…\" and choose the JSON you just downloaded, then Connect."),
+    )
+    steps.forEachIndexed { i, step ->
+        Row(verticalAlignment = Alignment.Top) {
+            Text("${i + 1}.", style = MaterialTheme.typography.titleSmall, modifier = Modifier.width(24.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(step.text, style = MaterialTheme.typography.bodyMedium)
+                step.copy.forEach { (label, value) ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("$label: ", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        SelectionContainer { Text(value, style = MaterialTheme.typography.labelLarge) }
+                        TextButton(onClick = { onCopy(value) }) { Text("Copy") }
+                    }
+                }
+            }
+            step.url?.let { url -> TextButton(onClick = { onOpenUrl(url) }) { Text("Open") } }
         }
     }
 }

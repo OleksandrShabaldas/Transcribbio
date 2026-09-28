@@ -31,8 +31,8 @@ android {
         applicationId = "com.transcribbio.phone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.3"
+        versionCode = 4
+        versionName = "1.0.4"
     }
 
     buildFeatures {
@@ -92,6 +92,10 @@ dependencies {
 
     // Receive recordings from the Wear OS watch over the Data Layer
     implementation(libs.play.services.wearable)
+
+    // Cloud relay: Google sign-in (Authorization API) for the hidden Drive folder
+    implementation(libs.play.services.auth)
+    implementation(libs.kotlinx.coroutines.play.services)
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)

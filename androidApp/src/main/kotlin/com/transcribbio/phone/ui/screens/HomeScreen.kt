@@ -21,12 +21,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +44,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -52,12 +62,14 @@ import com.transcribbio.phone.data.PendingRecording
 import com.transcribbio.phone.recording.RecState
 import com.transcribbio.phone.recording.RecordingController
 import com.transcribbio.phone.sync.SyncUiState
+import com.transcribbio.phone.ui.util.RecordingExport
 import com.transcribbio.phone.ui.util.formatDate
 import com.transcribbio.phone.ui.util.formatDuration
 import com.transcribbio.phone.ui.util.formatMillisClock
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen() {
@@ -165,8 +177,20 @@ private fun SyncStatusRow(state: SyncUiState, onSync: () -> Unit) {
 @Composable
 private fun RecordingRow(rec: PendingRecording) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var menuOpen by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    val file = remember(rec.id, rec.fileName) { AppGraph.store.audioFile(rec) }
+    // System "Save as" dialog: Downloads, SD card, Drive, … → copy the recording there.
+    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/mp4")) { uri ->
+        if (uri != null) scope.launch {
+            val r = RecordingExport.saveTo(context, file, uri)
+            note = if (r.isSuccess) "Saved" else "Couldn't save: ${r.exceptionOrNull()?.message}"
+        }
+    }
     Card(Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(start = 14.dp, top = 14.dp, bottom = 14.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(rec.title, style = MaterialTheme.typography.titleMedium, maxLines = 1,
                     overflow = TextOverflow.Ellipsis)
@@ -178,15 +202,43 @@ private fun RecordingRow(rec: PendingRecording) {
                 when {
                     rec.uploaded -> Text("Synced", style = MaterialTheme.typography.labelLarge,
                         color = Color(0xFF16A34A))
+                    rec.inCloud -> Text("In Google Drive — your PC will pick it up",
+                        style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     rec.error != null -> Text("Waiting to sync — ${rec.error}",
                         style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error)
                     else -> Text("Waiting to sync", style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary)
                 }
+                note?.let { Text(it, style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            if (rec.uploaded) {
-                IconButton(onClick = { AppGraph.store.remove(rec.id) }) {
-                    Icon(Icons.Default.CloudDone, "Synced", tint = Color(0xFF16A34A))
+            if (rec.uploaded) Icon(Icons.Default.CloudDone, "Synced", Modifier.size(20.dp), tint = Color(0xFF16A34A))
+            Box {
+                IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "More options") }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Share…") },
+                        leadingIcon = { Icon(Icons.Default.Share, null) },
+                        enabled = file.exists(),
+                        onClick = {
+                            menuOpen = false
+                            scope.launch {
+                                runCatching { RecordingExport.share(context, rec, file) }
+                                    .onFailure { note = "Couldn't share: ${it.message}" }
+                            }
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Save to device…") },
+                        leadingIcon = { Icon(Icons.Default.SaveAlt, null) },
+                        enabled = file.exists(),
+                        onClick = { menuOpen = false; saveLauncher.launch(RecordingExport.fileName(rec, file)) },
+                    )
+                    if (rec.uploaded) DropdownMenuItem(
+                        text = { Text("Remove from phone") },
+                        leadingIcon = { Icon(Icons.Default.Delete, null) },
+                        onClick = { menuOpen = false; AppGraph.store.remove(rec.id) },
+                    )
                 }
             }
         }

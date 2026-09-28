@@ -1,5 +1,12 @@
 package com.transcribbio.phone.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.Switch
+import androidx.compose.ui.platform.LocalContext
+import com.transcribbio.phone.sync.DriveRelay
+import com.transcribbio.phone.ui.util.findActivity
 import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -115,6 +122,57 @@ fun SettingsScreen() {
                 Text((if (ok) "✓ " else "✗ ") + msg, style = MaterialTheme.typography.bodyMedium,
                     color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
             }
+        }
+
+        SettingsCard("Cloud relay (Google Drive)") {
+            val account by AppGraph.prefs.driveAccount.collectAsState()
+            val onMobile by AppGraph.prefs.cloudOnMobileData.collectAsState()
+            val context = LocalContext.current
+            val cloudScope = rememberCoroutineScope()
+            var busy by remember { mutableStateOf(false) }
+            var problem by remember { mutableStateOf<String?>(null) }
+            val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+                cloudScope.launch {
+                    problem = runCatching { AppGraph.drive.completeConnect(res.data) }.exceptionOrNull()
+                        ?.let { DriveRelay.explain(it) }
+                    busy = false
+                }
+            }
+            Text("When your PC can't be reached directly (e.g. on university Wi-Fi), recordings go to a private, " +
+                "hidden folder in your Google Drive and your PC picks them up and deletes them. " +
+                "Set it up on the PC first: Transcribbio ▸ Settings ▸ Cloud relay.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (account.isBlank()) {
+                Button(
+                    onClick = {
+                        val activity = context.findActivity() ?: return@Button
+                        busy = true; problem = null
+                        cloudScope.launch {
+                            try {
+                                val consentScreen = AppGraph.drive.beginConnect(activity)
+                                if (consentScreen != null) {
+                                    consent.launch(IntentSenderRequest.Builder(consentScreen.intentSender).build())
+                                } else busy = false
+                            } catch (e: Exception) {
+                                problem = DriveRelay.explain(e); busy = false
+                            }
+                        }
+                    },
+                    enabled = !busy,
+                ) { Text(if (busy) "Connecting…" else "Connect Google Drive") }
+            } else {
+                Text("✓ Connected as $account", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = onMobile, onCheckedChange = { AppGraph.prefs.setCloudOnMobileData(it) })
+                    Text("  Also upload over mobile data", style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(if (onMobile) "Recordings upload as soon as the PC can't be reached."
+                    else "Recordings wait for Wi-Fi before uploading (they can be large).",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { cloudScope.launch { AppGraph.drive.disconnect() } }) { Text("Disconnect") }
+            }
+            problem?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
         }
 
         SettingsCard("App updates") {

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.Context
 import com.transcribbio.phone.core.Prefs
 import com.transcribbio.phone.data.RecordingStore
+import com.transcribbio.phone.sync.DriveRelay
 import com.transcribbio.phone.sync.SyncManager
 import com.transcribbio.phone.sync.SyncWorker
 import com.transcribbio.shared.update.AndroidUpdater
@@ -23,6 +24,8 @@ object AppGraph {
         private set
     lateinit var sync: SyncManager
         private set
+    lateinit var drive: DriveRelay
+        private set
     lateinit var updater: AndroidUpdater
         private set
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -31,7 +34,8 @@ object AppGraph {
         val app = context.applicationContext
         prefs = Prefs(app)
         store = RecordingStore(app)
-        sync = SyncManager(app, prefs, store, appScope)
+        drive = DriveRelay(app, prefs)
+        sync = SyncManager(app, prefs, store, drive, appScope)
         updater = AndroidUpdater(app, BuildConfig.VERSION_NAME, "phone")
     }
 }

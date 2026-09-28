@@ -34,7 +34,9 @@ models/
 *.gguf
 
 # ── App data / user recordings ──
-data/
+# Anchored to the repo root: a bare "data/" also matched the source packages
+# phone/data and desktop/data, so RecordingStore.kt / LibraryRepository.kt were never committed.
+/data/
 recordings/
 *.wav
 *.m4a

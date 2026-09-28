@@ -38,16 +38,17 @@ fun main() = application {
         TranscribbioTheme(darkTheme = dark) {
             App(
                 state = appState,
-                pickAudioFile = { pickOpenFile(frame) },
+                pickAudioFile = { pickOpenFile(frame, "Select audio file") },
                 pickSaveFile = { name -> pickSaveFile(frame, name) },
                 onOpenUrl = { url -> openUrl(url) },
+                pickFile = { title -> pickOpenFile(frame, title) },
             )
         }
     }
 }
 
-private fun pickOpenFile(parent: Frame): Path? {
-    val dialog = FileDialog(parent, "Select audio file", FileDialog.LOAD).apply {
+private fun pickOpenFile(parent: Frame, title: String): Path? {
+    val dialog = FileDialog(parent, title, FileDialog.LOAD).apply {
         isMultipleMode = false
         isVisible = true
     }

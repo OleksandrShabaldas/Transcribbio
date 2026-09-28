@@ -37,6 +37,7 @@ fun App(
     pickAudioFile: () -> Path?,
     pickSaveFile: (String) -> Path?,
     onOpenUrl: (String) -> Unit,
+    pickFile: (String) -> Path?,
 ) {
     val screen by state.screen.collectAsState()
     val sidecarState by state.sidecar.state.collectAsState()
@@ -90,7 +91,7 @@ fun App(
                     onImport = { pickAudioFile()?.let { state.importAudio(it) } },
                 )
                 is Screen.Detail -> LectureDetailScreen(state, s.lectureId, pickSaveFile)
-                is Screen.Settings -> SettingsScreen(state, onOpenUrl)
+                is Screen.Settings -> SettingsScreen(state, onOpenUrl, pickFile)
             }
         }
     }

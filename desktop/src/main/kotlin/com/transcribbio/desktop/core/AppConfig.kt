@@ -46,6 +46,12 @@ data class AppConfig(
     val syncToken: String = "",        // shared secret handed to paired devices
     val desktopDeviceId: String = "",  // stable id advertised over mDNS
     val desktopName: String = "",      // human-friendly name shown on devices
+
+    // ── Cloud relay: phone → hidden Google Drive folder → desktop (when Wi-Fi sync can't connect) ──
+    val driveClientId: String = "",
+    val driveClientSecret: String = "",
+    val driveRefreshToken: String = "",
+    val driveAccount: String = "",
 ) {
     fun hasGeminiKey() = geminiApiKey.isNotBlank()
 
