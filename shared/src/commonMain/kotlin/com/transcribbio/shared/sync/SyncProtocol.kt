@@ -14,12 +14,15 @@ object SyncProtocol {
     const val DEFAULT_PORT = 47815
 
     const val TOKEN_HEADER = "X-Transcribbio-Token"
-    const val TITLE_HEADER = "X-Lecture-Title"
+    const val TITLE_HEADER = "X-Lecture-Title"              // ASCII-only fallback (older desktops)
+    /** Title as percent-encoded UTF-8: HTTP headers can't carry š, č, ž, ť, ľ, "–" etc. */
+    const val TITLE_ENC_HEADER = "X-Lecture-Title-Enc"
     const val LANGUAGE_HEADER = "X-Lecture-Language"
     const val SOURCE_HEADER = "X-Source-Device"
     const val RECORDED_AT_HEADER = "X-Recorded-At"
     const val FILENAME_HEADER = "X-File-Name"
     const val OFFSET_HEADER = "X-Upload-Offset"            // for resumable uploads
+    const val RECORDING_ID_HEADER = "X-Recording-Id"       // phone recording id (for later renames)
 
     const val TXT_NAME = "name"
     const val TXT_DEVICE_ID = "id"
@@ -64,6 +67,15 @@ data class LectureSummaryDto(
 
 @Serializable
 data class LectureListDto(val lectures: List<LectureSummaryDto>)
+
+/** Rename a lecture from the phone: by the phone's recording id (works for Wi-Fi and Drive
+ *  deliveries) or by the desktop lecture id. */
+@Serializable
+data class RenameRequestDto(
+    val title: String,
+    val recordingId: String? = null,
+    val lectureId: String? = null,
+)
 
 @Serializable
 data class UploadResultDto(

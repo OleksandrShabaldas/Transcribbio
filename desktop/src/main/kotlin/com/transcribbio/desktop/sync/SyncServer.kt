@@ -8,6 +8,7 @@ import com.transcribbio.shared.sync.LectureSummaryDto
 import com.transcribbio.shared.sync.PairRequestDto
 import com.transcribbio.shared.sync.PairResponseDto
 import com.transcribbio.shared.sync.PingDto
+import com.transcribbio.shared.sync.RenameRequestDto
 import com.transcribbio.shared.sync.SyncProtocol
 import com.transcribbio.shared.sync.UploadResultDto
 import io.ktor.http.HttpStatusCode
@@ -107,15 +108,31 @@ class SyncServer(
                         if (lecture == null) call.respond(HttpStatusCode.NotFound, "Unknown lecture")
                         else call.respond(lecture)
                     }
+                    post("/api/rename") {
+                        if (!call.authed()) return@post
+                        val req = runCatching { call.receive<RenameRequestDto>() }.getOrNull()
+                        val lecture = req?.let { r ->
+                            r.recordingId?.let { repo.findBySourceRecording(it) } ?: r.lectureId?.let { repo.get(it) }
+                        }
+                        if (req == null || lecture == null || req.title.isBlank()) {
+                            call.respond(HttpStatusCode.NotFound, "Unknown lecture")
+                        } else {
+                            repo.rename(lecture.id, req.title)
+                            call.respond(HttpStatusCode.OK, "renamed")
+                        }
+                    }
                     post("/api/upload") {
                         if (!call.authed()) return@post
-                        val title = call.request.header(SyncProtocol.TITLE_HEADER) ?: "Lecture"
+                        val title = call.request.header(SyncProtocol.TITLE_ENC_HEADER)
+                            ?.let { runCatching { java.net.URLDecoder.decode(it, Charsets.UTF_8) }.getOrNull() }
+                            ?: call.request.header(SyncProtocol.TITLE_HEADER) ?: "Lecture"
                         val language = call.request.header(SyncProtocol.LANGUAGE_HEADER) ?: configProvider().language
                         val source = call.request.header(SyncProtocol.SOURCE_HEADER) ?: "phone"
                         val filename = call.request.header(SyncProtocol.FILENAME_HEADER) ?: "audio.m4a"
                         val recordedAt = call.request.header(SyncProtocol.RECORDED_AT_HEADER)?.toLongOrNull() ?: 0L
+                        val recordingId = call.request.header(SyncProtocol.RECORDING_ID_HEADER)
                         val lecture = call.receiveStream().use { input ->
-                            repo.saveUpload(input, filename, title, language, source, recordedAt)
+                            repo.saveUpload(input, filename, title, language, source, recordedAt, recordingId)
                         }
                         onUpload(lecture.id)
                         call.respond(UploadResultDto(lecture.id, "received"))

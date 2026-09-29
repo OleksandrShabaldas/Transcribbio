@@ -205,8 +205,16 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit, pickFile: (Stri
                 draft.device) { draft = draft.copy(device = it) }
         }
 
-        // ── Auto materials ──
-        SettingsCard("Generate automatically after transcription") {
+        // ── Automatic AI (off by default: AI runs only when picked on a lecture) ──
+        SettingsCard("After transcription") {
+            Text("By default only the transcript is created. Use “Generate with AI…” on a lecture to pick " +
+                "what you want. Tick anything here to have it done automatically instead.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = draft.autoCorrect, onCheckedChange = { draft = draft.copy(autoCorrect = it) })
+                Text("Correct the transcript with AI")
+            }
             listOf("summary" to "Summary", "notes" to "Notes", "takeaways" to "Key takeaways", "flashcards" to "Flashcards")
                 .forEach { (key, label) ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -223,8 +231,8 @@ fun SettingsScreen(state: AppState, onOpenUrl: (String) -> Unit, pickFile: (Stri
                         Text(label)
                     }
                 }
-            Text("Others can be generated on demand from each lecture.",
-                style = MaterialTheme.typography.bodyMedium,
+            Text("Changes here apply after you press Save settings at the bottom.",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 

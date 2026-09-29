@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
 const val RECORDING_CHANNEL_ID = "recording"
+const val UPLOAD_CHANNEL_ID = "uploads"
 
 /** Simple manual DI graph, initialised from the Application. */
 object AppGraph {
@@ -55,5 +56,9 @@ class TranscribbioApp : Application() {
             NotificationManager.IMPORTANCE_LOW,
         ).apply { description = "Ongoing lecture recording" }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(UPLOAD_CHANNEL_ID, "Uploads", NotificationManager.IMPORTANCE_LOW)
+                .apply { description = "Shown while recordings are sent to your PC in the background" }
+        )
     }
 }

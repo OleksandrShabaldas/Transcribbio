@@ -45,7 +45,7 @@ sealed interface LlmTestUi {
     data class Failed(val message: String) : LlmTestUi
 }
 
-private const val APP_VERSION = "1.0.8"
+private const val APP_VERSION = "1.0.9"
 
 class AppState {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -87,7 +87,14 @@ class AppState {
         env.migrateFromLegacy() // must run BEFORE ensureDirs (which would pre-create empty dst dirs)
         env.ensureDirs()
         configStore = ConfigStore(env)
-        _config = MutableStateFlow(configStore.load().copy(dataDir = env.dataDir.toString()))
+        var loaded = configStore.load().copy(dataDir = env.dataDir.toString())
+        // Schema 2: AI steps became on-demand. Existing installs had summary+notes auto-generated;
+        // the user asked for transcript-only, so reset those once (they can opt back in).
+        if (loaded.configSchema < 2) {
+            loaded = loaded.copy(autoCorrect = false, autoGenerateMaterials = emptyList(), configSchema = 2)
+            runCatching { configStore.save(loaded) }
+        }
+        _config = MutableStateFlow(loaded)
         config = _config.asStateFlow()
         repo = LibraryRepository(env)
         orchestrator = ProcessingOrchestrator(sidecar, repo) { _config.value }
@@ -171,14 +178,40 @@ class AppState {
 
     fun reCorrect(id: String) = scope.launch { orchestrator.reCorrect(id) }
 
+    /** Run the AI steps the user picked, in order: correction first (so study materials are
+     *  built from the corrected text), then each material one after another (gentle on quotas). */
+    fun generateSelected(id: String, correct: Boolean, kinds: List<StudyMaterialKind>) = scope.launch {
+        val keys = (if (correct) listOf("$id:correct") else emptyList()) + kinds.map { "$id:${it.api}" }
+        _aiQueued.value = _aiQueued.value + keys
+        try {
+            if (correct) {
+                _aiQueued.value = _aiQueued.value - "$id:correct"
+                orchestrator.reCorrect(id)
+            }
+            for (kind in kinds) {
+                _aiQueued.value = _aiQueued.value - "$id:${kind.api}"
+                orchestrator.generateMaterial(id, kind)
+            }
+        } finally {
+            _aiQueued.value = _aiQueued.value - keys.toSet()
+        }
+    }
+
+    /** AI steps picked in "Generate with AI" that are waiting for an earlier step to finish. */
+    private val _aiQueued = MutableStateFlow<Set<String>>(emptySet())
+    val aiQueued: StateFlow<Set<String>> = _aiQueued.asStateFlow()
+
+    // ── Groups ──
+    fun setLectureGroup(id: String, group: String?) = repo.setGroup(id, group)
+    fun renameGroup(from: String, to: String) = repo.renameGroup(from, to)
+    fun removeGroup(name: String) = repo.renameGroup(name, null)
+
     fun deleteLecture(id: String) {
         repo.delete(id)
         if (_screen.value == Screen.Detail(id)) back()
     }
 
-    fun renameLecture(id: String, title: String) {
-        repo.get(id)?.let { repo.save(it.copy(title = title)) }
-    }
+    fun renameLecture(id: String, title: String) = repo.rename(id, title)
 
     // ── Settings ──
     fun saveSettings(draft: AppConfig) {

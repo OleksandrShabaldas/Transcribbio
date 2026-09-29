@@ -1,5 +1,12 @@
 package com.transcribbio.desktop.ui.screens
 
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.IconButton
+import com.transcribbio.desktop.ui.components.ConfirmDialog
+import com.transcribbio.desktop.ui.components.GenerateDialog
+import com.transcribbio.desktop.ui.components.GroupDialog
+import com.transcribbio.desktop.ui.components.TextPromptDialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,7 +78,9 @@ fun LectureDetailScreen(
     pickSaveFile: (String) -> Path?,
 ) {
     val lectures by state.repo.lectures.collectAsState()
-    val busy by state.orchestrator.busyMaterials.collectAsState()
+    val running by state.orchestrator.busyMaterials.collectAsState()
+    val queued by state.aiQueued.collectAsState()
+    val busy = running + queued
     val errors by state.orchestrator.materialErrors.collectAsState()
     val progressMap by state.orchestrator.progress.collectAsState()
     val lecture = lectures.firstOrNull { it.id == lectureId } ?: run {
@@ -108,7 +117,7 @@ fun LectureDetailScreen(
 
         Box(Modifier.fillMaxSize().padding(24.dp)) {
             when (tab) {
-                0 -> TranscriptTab(lecture.transcript!!)
+                0 -> TranscriptTab(lecture.transcript!!, busy.contains("${lecture.id}:correct")) { state.reCorrect(lecture.id) }
                 1 -> MaterialTab(state, lecture, StudyMaterialKind.SUMMARY, busy, errors)
                 2 -> MaterialTab(state, lecture, StudyMaterialKind.NOTES, busy, errors)
                 3 -> MaterialTab(state, lecture, StudyMaterialKind.TAKEAWAYS, busy, errors)
@@ -120,10 +129,24 @@ fun LectureDetailScreen(
 
 @Composable
 private fun DetailHeader(state: AppState, lecture: Lecture, busy: Set<String>, errors: Map<String, String>) {
+    var renaming by remember { mutableStateOf(false) }
+    var grouping by remember { mutableStateOf(false) }
+    var generating by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp)) {
-        Text(lecture.title, style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(lecture.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f, fill = false))
+            IconButton(onClick = { renaming = true }) {
+                Icon(Icons.Default.Edit, "Rename", Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         Spacer(Modifier.height(6.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AssistChip(
+                onClick = { grouping = true },
+                leadingIcon = { Icon(Icons.Default.Folder, null, Modifier.size(16.dp)) },
+                label = { Text(lecture.group ?: "Add to group", style = MaterialTheme.typography.labelLarge) },
+            )
             val t = lecture.transcript
             InfoChip(languageLabel(lecture.language))
             if (lecture.durationS > 0) InfoChip(formatDuration(lecture.durationS))
@@ -135,15 +158,16 @@ private fun DetailHeader(state: AppState, lecture: Lecture, busy: Set<String>, e
             }
         }
         Spacer(Modifier.height(12.dp))
-        val correcting = busy.contains("${lecture.id}:correct")
+        val aiRunning = busy.any { it.startsWith("${lecture.id}:") }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             if (lecture.transcript != null) {
-                OutlinedButton(onClick = { state.reCorrect(lecture.id) }, enabled = !correcting) {
-                    if (correcting) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text("  Correcting…")
+                Button(onClick = { generating = true }) {
+                    if (aiRunning) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary)
+                        Text("  Working… (add more)")
                     } else {
-                        Icon(Icons.Default.AutoFixHigh, null, Modifier.size(18.dp)); Text("  Re-correct")
+                        Icon(Icons.Default.AutoFixHigh, null, Modifier.size(18.dp)); Text("  Generate with AI…")
                     }
                 }
             }
@@ -153,10 +177,10 @@ private fun DetailHeader(state: AppState, lecture: Lecture, busy: Set<String>, e
             ) {
                 Button(onClick = { state.processLecture(lecture.id) }) {
                     Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
-                    Text(if (lecture.status == LectureStatus.ERROR) "  Retry" else "  Process")
+                    Text(if (lecture.status == LectureStatus.ERROR) "  Retry" else "  Transcribe")
                 }
             }
-            TextButton(onClick = { state.deleteLecture(lecture.id) }) {
+            TextButton(onClick = { deleting = true }) {
                 Icon(Icons.Default.Delete, null, Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.error)
                 Text("  Delete", color = MaterialTheme.colorScheme.error)
@@ -167,6 +191,19 @@ private fun DetailHeader(state: AppState, lecture: Lecture, busy: Set<String>, e
             ErrorNote(err) { state.navigate(Screen.Settings) }
         }
     }
+
+    if (renaming) TextPromptDialog("Rename lecture", "Title", lecture.title, onDismiss = { renaming = false }) {
+        state.renameLecture(lecture.id, it); renaming = false
+    }
+    if (grouping) GroupDialog(lecture.group, state.repo.groups(), onDismiss = { grouping = false }) {
+        state.setLectureGroup(lecture.id, it); grouping = false
+    }
+    if (generating) GenerateDialog(lecture, onDismiss = { generating = false }) { correct, kinds ->
+        state.generateSelected(lecture.id, correct, kinds); generating = false
+    }
+    if (deleting) ConfirmDialog("Delete lecture?",
+        "“${lecture.title}” — its recording, transcript and notes — will be deleted from this PC.", "Delete",
+        onDismiss = { deleting = false }) { deleting = false; state.deleteLecture(lecture.id) }
 }
 
 @Composable
@@ -199,7 +236,7 @@ private fun NotProcessedYet(state: AppState, lecture: Lecture) {
 }
 
 @Composable
-private fun TranscriptTab(transcript: Transcript) {
+private fun TranscriptTab(transcript: Transcript, correcting: Boolean, onCorrect: () -> Unit) {
     var showRaw by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
     val clipboard = LocalClipboardManager.current
@@ -209,9 +246,19 @@ private fun TranscriptTab(transcript: Transcript) {
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (showRaw) "Raw transcript (low-confidence highlighted)" else "Corrected transcript",
+                when {
+                    transcript.cleanText == null -> "Transcript"
+                    showRaw -> "Raw transcript (low-confidence highlighted)"
+                    else -> "Corrected transcript"
+                },
                 style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f),
             )
+            if (transcript.cleanText == null) {
+                TextButton(onClick = onCorrect, enabled = !correcting) {
+                    Icon(Icons.Default.AutoFixHigh, null, Modifier.size(18.dp))
+                    Text(if (correcting) "  Correcting…" else "  Correct with AI")
+                }
+            }
             if (transcript.cleanText != null) {
                 TextButton(onClick = { showRaw = !showRaw }) {
                     Text(if (showRaw) "Show corrected" else "Show raw")

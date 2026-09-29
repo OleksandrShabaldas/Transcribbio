@@ -8,6 +8,7 @@ import com.transcribbio.shared.model.DeviceKind
 import com.transcribbio.shared.model.Lecture
 import com.transcribbio.shared.sync.LectureSummaryDto
 import com.transcribbio.shared.sync.PairRequestDto
+import com.transcribbio.shared.sync.RenameRequestDto
 import com.transcribbio.shared.sync.SyncProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -43,7 +44,10 @@ class SyncManager(
     private val _endpoint = MutableStateFlow<DesktopEndpoint?>(null)
     val endpoint: StateFlow<DesktopEndpoint?> = _endpoint.asStateFlow()
 
-    fun requestSync(context: Context): Job = scope.launch { syncNow() }
+    /** Ask for a sync. Runs as a WorkManager job (not an in-app coroutine), so it keeps going
+     *  when the screen turns off and resumes after the app is killed. [userAsked] = run on any
+     *  network right away (the Drive part still honours the mobile-data setting). */
+    fun requestSync(context: Context, userAsked: Boolean = false) = SyncWorker.kick(context, userAsked)
 
     suspend fun syncNow(): Boolean = mutex.withLock {
         _state.value = SyncUiState.Discovering
@@ -78,6 +82,7 @@ class SyncManager(
 
         val pending = store.pendingUploads()
         var uploaded = 0
+        var failed = 0
         pending.forEachIndexed { i, rec ->
             _state.value = SyncUiState.Uploading(i + 1, pending.size, 0f)
             val file = store.audioFile(rec)
@@ -87,19 +92,32 @@ class SyncManager(
             }
             runCatching {
                 client.uploadRecording(
-                    ep.host, ep.port, token, rec.title, rec.language, rec.createdAtMillis, file,
+                    ep.host, ep.port, token, rec.title, rec.language, rec.createdAtMillis, file, rec.id,
                 ) { f -> _state.value = SyncUiState.Uploading(i + 1, pending.size, f) }
             }.onSuccess {
                 store.markUploaded(rec.id, it.lectureId); uploaded++
             }.onFailure {
+                failed++
                 store.setError(rec.id, it.message ?: "upload failed")
             }
         }
-        if (drive.isConnected && store.items.value.any { it.inCloud }) {
-            drive.silentToken()?.let { runCatching { confirmCloudPickups(it) } }
+        // Renames made on the phone after the desktop already had the recording.
+        store.items.value.filter { it.renamePending }.forEach { rec ->
+            val ok = client.rename(ep.host, ep.port, token,
+                RenameRequestDto(rec.title, recordingId = rec.id, lectureId = rec.lectureId?.ifBlank { null }))
+            if (ok) store.clearRenamePending(rec.id)
+        }
+        if (drive.isConnected && store.items.value.any { it.inCloud || it.renamePending }) {
+            drive.silentToken()?.let { t ->
+                runCatching { confirmCloudPickups(t) }
+                // Still waiting in Drive (the desktop hasn't imported it): rename it there.
+                store.items.value.filter { it.renamePending && it.cloudFileId != null }.forEach { rec ->
+                    runCatching { drive.pushRename(t, rec) }.onSuccess { store.clearRenamePending(rec.id) }
+                }
+            }
         }
         _state.value = SyncUiState.Done(ep.name, uploaded, System.currentTimeMillis())
-        return true
+        return failed == 0
     }
 
     suspend fun fetchLectures(): List<LectureSummaryDto> {
@@ -126,23 +144,31 @@ class SyncManager(
         return null
     }
 
-    /** Upload pending recordings to the Drive mailbox. Returns null when the relay isn't
-     *  connected (caller shows the "can't reach desktop" message instead). */
+    /** Deliver through the Drive mailbox: pending recordings (resuming interrupted uploads) and
+     *  renames. Returns null when the relay isn't connected (caller shows the "can't reach desktop"
+     *  message instead); true when nothing is left to deliver, false to have the job retry later. */
     private suspend fun uploadViaCloud(): Boolean? {
         if (!drive.isConnected) return null
-        drive.silentToken()?.let { confirmCloudPickups(it) }
+        val firstToken = drive.silentToken() ?: run {
+            _state.value = SyncUiState.Error("Google Drive needs reconnecting — open Settings ▸ Cloud relay.")
+            return false
+        }
+        runCatching { confirmCloudPickups(firstToken) }
         val pending = store.pendingUploads()
-        if (pending.isEmpty()) {
+        fun renames() = store.items.value.filter { it.renamePending && (it.uploaded || it.cloudFileId != null) }
+        if (pending.isEmpty() && renames().isEmpty()) {
             _state.value = SyncUiState.Done("Google Drive", 0, System.currentTimeMillis())
             return true
         }
-        if (drive.onMeteredNetwork() && !prefs.cloudOnMobileData.value) {
+        if (pending.isNotEmpty() && drive.onMeteredNetwork() && !prefs.cloudOnMobileData.value) {
             _state.value = SyncUiState.Error("${pending.size} recording(s) will upload to Google Drive on Wi-Fi " +
                 "(uploading over mobile data is off in Settings ▸ Cloud relay).")
             return false
         }
         var uploaded = 0
-        pending.forEachIndexed { i, rec ->
+        var failed = 0
+        pending.forEachIndexed { i, queued ->
+            val rec = store.get(queued.id) ?: return@forEachIndexed
             val file = store.audioFile(rec)
             if (!file.exists()) {
                 store.setError(rec.id, "recording file missing")
@@ -155,15 +181,25 @@ class SyncManager(
             }
             _state.value = SyncUiState.Uploading(i + 1, pending.size, 0f)
             runCatching {
-                drive.upload(token, rec, file) { f -> _state.value = SyncUiState.Uploading(i + 1, pending.size, f) }
+                drive.upload(token, rec, file, onSession = { store.setDriveSession(rec.id, it) }) { f ->
+                    _state.value = SyncUiState.Uploading(i + 1, pending.size, f)
+                }
             }.onSuccess { fileId ->
                 store.markUploadedToCloud(rec.id, fileId); uploaded++
             }.onFailure {
-                store.setError(rec.id, "Google Drive: ${it.message ?: "upload failed"}")
+                failed++
+                store.setError(rec.id, "Google Drive: ${it.message ?: "upload failed"} — will retry")
             }
         }
+        // Renames — including ones made while those uploads were still in flight.
+        for (rec in renames()) {
+            val token = drive.silentToken() ?: break
+            runCatching { drive.pushRename(token, rec) }
+                .onSuccess { store.clearRenamePending(rec.id) }
+                .onFailure { failed++ }
+        }
         _state.value = SyncUiState.Done("Google Drive (your PC picks it up)", uploaded, System.currentTimeMillis())
-        return uploaded > 0 || pending.isEmpty()
+        return failed == 0
     }
 
     /** Recordings the PC has already pulled out of Drive count as synced on the phone too. */

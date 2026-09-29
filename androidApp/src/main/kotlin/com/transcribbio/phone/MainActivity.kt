@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         // Opportunistic sync + update check whenever the app comes to the foreground.
-        AppGraph.sync.requestSync(this)
+        AppGraph.sync.requestSync(this, userAsked = true)
         AppGraph.updater.checkOnLaunch()
     }
 }

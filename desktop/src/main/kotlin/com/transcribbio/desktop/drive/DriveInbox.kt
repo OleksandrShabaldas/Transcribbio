@@ -154,7 +154,7 @@ class DriveInbox(
                     FileOutputStream(tmp).use { out -> drive.download(token, item.fileId) { buf, n -> out.write(buf, 0, n) } }
                     val lecture = tmp.inputStream().use {
                         repo.saveUpload(it, "audio.$ext", item.meta.title, item.meta.language,
-                            "${item.meta.source} (via Google Drive)", item.meta.recordedAtMillis)
+                            "${item.meta.source} (via Google Drive)", item.meta.recordedAtMillis, item.meta.recId)
                     }
                     tmp.delete()
                     imported += item.fileId
@@ -165,6 +165,11 @@ class DriveInbox(
                 drive.delete(token, item.fileId) // only after the recording is safely in the library
                 imported -= item.fileId
                 persistImported()
+            }
+            // Renames made on the phone after the lecture reached this PC.
+            for (note in drive.listRenames(token)) {
+                repo.findBySourceRecording(note.recId)?.let { repo.rename(it.id, note.title) }
+                drive.delete(token, note.fileId)
             }
             _state.value = DriveState.Connected(account, System.currentTimeMillis(), false, picked, null)
         } catch (e: AuthException) {

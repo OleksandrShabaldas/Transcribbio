@@ -64,6 +64,32 @@ class LibraryRepository(private val env: AppEnvironment) {
 
     fun get(id: String): Lecture? = _lectures.value.firstOrNull { it.id == id }
 
+    /** The lecture that came from a given phone recording (for renames made on the phone). */
+    fun findBySourceRecording(recordingId: String): Lecture? =
+        _lectures.value.firstOrNull { it.sourceRecordingId == recordingId }
+
+    fun rename(id: String, title: String) {
+        val t = title.trim()
+        if (t.isEmpty()) return
+        get(id)?.let { if (it.title != t) save(it.copy(title = t)) }
+    }
+
+    /** Put a lecture in a group (null / blank = no group). */
+    fun setGroup(id: String, group: String?) {
+        val g = group?.trim()?.ifBlank { null }
+        get(id)?.let { if (it.group != g) save(it.copy(group = g)) }
+    }
+
+    /** Rename a group (or pass null to dissolve it) across all its lectures. */
+    fun renameGroup(from: String, to: String?) {
+        val target = to?.trim()?.ifBlank { null }
+        _lectures.value.filter { it.group == from }.forEach { save(it.copy(group = target)) }
+    }
+
+    /** Existing groups, alphabetical (case- and accent-insensitive). */
+    fun groups(): List<String> = _lectures.value.mapNotNull { it.group }.distinct()
+        .sortedWith(compareBy(java.text.Collator.getInstance(java.util.Locale("sk"))) { it })
+
     fun newId(): String {
         val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
         val rand = (1000..9999).random()
@@ -118,6 +144,7 @@ class LibraryRepository(private val env: AppEnvironment) {
         language: String,
         source: String,
         createdAtMillis: Long,
+        sourceRecordingId: String? = null,
     ): Lecture {
         val id = newId()
         val dir = lectureDir(id)
@@ -133,6 +160,7 @@ class LibraryRepository(private val env: AppEnvironment) {
             audioFileName = audioName,
             language = language.ifBlank { "sk" },
             status = LectureStatus.RECORDED,
+            sourceRecordingId = sourceRecordingId?.ifBlank { null },
         )
         save(lecture)
         return lecture

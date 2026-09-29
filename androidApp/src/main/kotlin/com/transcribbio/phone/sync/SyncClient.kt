@@ -5,6 +5,8 @@ import com.transcribbio.shared.sync.LectureListDto
 import com.transcribbio.shared.sync.PairRequestDto
 import com.transcribbio.shared.sync.PairResponseDto
 import com.transcribbio.shared.sync.PingDto
+import com.transcribbio.shared.sync.RenameRequestDto
+import io.ktor.http.isSuccess
 import com.transcribbio.shared.sync.SyncProtocol
 import com.transcribbio.shared.sync.UploadResultDto
 import io.ktor.client.HttpClient
@@ -64,11 +66,14 @@ class SyncClient {
         language: String,
         recordedAtMillis: Long,
         file: File,
+        recordingId: String,
         onProgress: (Float) -> Unit = {},
     ): UploadResultDto =
         http.post("${base(host, port)}/api/upload") {
             header(SyncProtocol.TOKEN_HEADER, token)
-            header(SyncProtocol.TITLE_HEADER, title)
+            header(SyncProtocol.TITLE_ENC_HEADER, java.net.URLEncoder.encode(title, "UTF-8"))
+            header(SyncProtocol.TITLE_HEADER, asciiTitle(title))
+            header(SyncProtocol.RECORDING_ID_HEADER, recordingId)
             header(SyncProtocol.LANGUAGE_HEADER, language)
             header(SyncProtocol.SOURCE_HEADER, "phone")
             header(SyncProtocol.RECORDED_AT_HEADER, recordedAtMillis.toString())
@@ -79,6 +84,20 @@ class SyncClient {
                 if (total != null && total > 0) onProgress(sent.toFloat() / total.toFloat())
             }
         }.body()
+
+    /** Rename a lecture on the desktop. False if it doesn't know the lecture (yet) or is older. */
+    suspend fun rename(host: String, port: Int, token: String, req: RenameRequestDto): Boolean = runCatching {
+        http.post("${base(host, port)}/api/rename") {
+            header(SyncProtocol.TOKEN_HEADER, token)
+            contentType(ContentType.Application.Json)
+            setBody(req)
+        }.status.isSuccess()
+    }.getOrDefault(false)
+
+    /** "Štruktúra – úvod" → "Struktura - uvod" for desktops that predate the encoded header. */
+    private fun asciiTitle(title: String): String =
+        java.text.Normalizer.normalize(title.replace('–', '-').replace('—', '-'), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "").replace(Regex("[^\\x20-\\x7E]"), "?")
 
     suspend fun listLectures(host: String, port: Int, token: String): LectureListDto =
         http.get("${base(host, port)}/api/lectures") {

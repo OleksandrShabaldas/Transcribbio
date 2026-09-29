@@ -46,4 +46,63 @@ class DriveApiTest {
         assertTrue(api.list(token).isEmpty(), "deleted from the mailbox")
         println("OK: ${data.size} bytes, progress=$progress")
     }
+
+    /** The app is killed mid-upload; the next run resumes the saved session instead of restarting. */
+    @Test
+    fun resumesSavedSessionAfterAppKilled() = runBlocking {
+        val base = System.getenv("DRIVE_MOCK") ?: return@runBlocking println("DRIVE_MOCK not set — skipped")
+        val api = DriveApi(HttpClient(CIO), "$base/drive/v3", "$base/upload/drive/v3")
+        val token = "testtoken"
+        val data = ByteArray(DriveApi.CHUNK * 2 + 777) { (it * 13 % 256).toByte() }
+        val meta = RelayRecording("rec-kill", "Killed mid-upload", "sk", 1L, "phone", "m4a")
+        var saved: String? = null
+
+        // First run: the process "dies" while reading the 2nd chunk (after chunk 1 was committed).
+        val first = runCatching {
+            api.upload(token, meta, data.size.toLong(), "audio/mp4",
+                read = { off, len -> if (off > 0) throw IllegalStateException("process killed")
+                    else data.copyOfRange(off.toInt(), off.toInt() + len) },
+                onSession = { saved = it })
+        }
+        assertTrue(first.isFailure && saved != null, "first run dies but leaves a saved session")
+
+        // Second run: resume from the saved session.
+        val progress = mutableListOf<Float>()
+        var finalSession: String? = "unset"
+        val id = api.upload(token, meta, data.size.toLong(), "audio/mp4",
+            read = { off, len -> data.copyOfRange(off.toInt(), off.toInt() + len) },
+            onProgress = { progress += it }, session = saved, onSession = { finalSession = it })
+        assertTrue(progress.first() >= 0.39f, "resumed after chunk 1 instead of from zero (first=${progress.first()})")
+        assertEquals(null, finalSession, "session cleared once complete")
+        val out = ByteArrayOutputStream()
+        api.download(token, id) { b, n -> out.write(b, 0, n) }
+        assertContentEquals(data, out.toByteArray(), "resumed upload is byte-identical")
+        api.delete(token, id)
+        println("OK resume: progress=$progress")
+    }
+
+    @Test
+    fun renamesInMailboxAndViaNotes() = runBlocking {
+        val base = System.getenv("DRIVE_MOCK") ?: return@runBlocking println("DRIVE_MOCK not set — skipped")
+        val api = DriveApi(HttpClient(CIO), "$base/drive/v3", "$base/upload/drive/v3")
+        val token = "testtoken"
+        val bytes = ByteArray(1000) { it.toByte() }
+        val id = api.upload(token, RelayRecording("rec-r", "Old name", "sk", 1L, "phone", "m4a"),
+            bytes.size.toLong(), "audio/mp4", { o, l -> bytes.copyOfRange(o.toInt(), o.toInt() + l) })
+
+        assertTrue(api.setTitle(token, id, "Biochémia – enzýmy"))
+        assertEquals("Biochémia – enzýmy", api.list(token).single { it.fileId == id }.meta.title)
+
+        // A rename note for the same recording must not be mistaken for the recording.
+        api.postRename(token, "rec-r", "Final name")
+        assertEquals(id, api.findByRecId(token, "rec-r"))
+        val notes = api.listRenames(token)
+        assertEquals(listOf("rec-r" to "Final name"), notes.map { it.recId to it.title })
+        assertEquals(1, api.list(token).size, "notes don't show up as recordings")
+
+        api.delete(token, id)
+        notes.forEach { api.delete(token, it.fileId) }
+        assertEquals(false, api.setTitle(token, id, "gone"), "retitle reports a picked-up recording")
+        println("OK renames")
+    }
 }

@@ -95,6 +95,10 @@ data class Lecture(
     val transcript: Transcript? = null,
     val materials: Map<StudyMaterialKind, StudyMaterial> = emptyMap(),
     val errorMessage: String? = null,
+    /** Optional user-defined group (e.g. a subject / course). */
+    val group: String? = null,
+    /** Id of the phone recording this lecture came from — lets a rename made on the phone find it. */
+    val sourceRecordingId: String? = null,
 ) {
     fun hasMaterial(kind: StudyMaterialKind): Boolean = materials.containsKey(kind)
 }

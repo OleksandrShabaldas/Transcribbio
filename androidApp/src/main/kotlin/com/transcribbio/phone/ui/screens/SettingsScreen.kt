@@ -1,5 +1,9 @@
 package com.transcribbio.phone.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import com.transcribbio.phone.sync.SyncWorker
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -135,6 +139,7 @@ fun SettingsScreen() {
                 cloudScope.launch {
                     problem = runCatching { AppGraph.drive.completeConnect(res.data) }.exceptionOrNull()
                         ?.let { DriveRelay.explain(it) }
+                    if (problem == null) AppGraph.sync.requestSync(context)
                     busy = false
                 }
             }
@@ -152,7 +157,10 @@ fun SettingsScreen() {
                                 val consentScreen = AppGraph.drive.beginConnect(activity)
                                 if (consentScreen != null) {
                                     consent.launch(IntentSenderRequest.Builder(consentScreen.intentSender).build())
-                                } else busy = false
+                                } else {
+                                    busy = false
+                                    AppGraph.sync.requestSync(context)
+                                }
                             } catch (e: Exception) {
                                 problem = DriveRelay.explain(e); busy = false
                             }
@@ -164,7 +172,11 @@ fun SettingsScreen() {
                 Text("✓ Connected as $account", style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(checked = onMobile, onCheckedChange = { AppGraph.prefs.setCloudOnMobileData(it) })
+                    Switch(checked = onMobile, onCheckedChange = {
+                        AppGraph.prefs.setCloudOnMobileData(it)
+                        SyncWorker.schedulePeriodic(context)
+                        AppGraph.sync.requestSync(context)
+                    })
                     Text("  Also upload over mobile data", style = MaterialTheme.typography.bodyMedium)
                 }
                 Text(if (onMobile) "Recordings upload as soon as the PC can't be reached."
@@ -173,6 +185,37 @@ fun SettingsScreen() {
                 TextButton(onClick = { cloudScope.launch { AppGraph.drive.disconnect() } }) { Text("Disconnect") }
             }
             problem?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+        }
+
+        SettingsCard("Background uploads") {
+            val context = LocalContext.current
+            val power = remember { context.getSystemService(PowerManager::class.java) }
+            fun exempt() = power?.isIgnoringBatteryOptimizations(context.packageName) == true
+            var unrestricted by remember { mutableStateOf(exempt()) }
+            val batteryDialog = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+                unrestricted = exempt()
+                if (unrestricted) AppGraph.sync.requestSync(context)
+            }
+            if (unrestricted) {
+                Text("✓ Recordings keep uploading while the phone is asleep (with an “Uploading…” notification).",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            } else {
+                Text("Android may pause uploads while the phone is asleep until you allow Transcribbio to run " +
+                    "in the background. It only works while there's something to send.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = {
+                    runCatching {
+                        batteryDialog.launch(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${context.packageName}")))
+                    }.onFailure {
+                        // Some phones hide that dialog: open the app's battery settings instead.
+                        batteryDialog.launch(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:${context.packageName}")))
+                    }
+                }) { Text("Allow background uploads") }
+                Text("On Samsung: if asked, choose “Allow” (battery usage becomes Unrestricted).",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
 
         SettingsCard("App updates") {

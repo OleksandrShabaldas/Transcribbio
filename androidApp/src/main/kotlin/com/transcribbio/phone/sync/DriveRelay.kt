@@ -85,9 +85,17 @@ class DriveRelay(private val context: Context, private val prefs: Prefs) {
         prefs.setDriveAccount("")
     }
 
-    /** Upload one recording to the Drive mailbox (skipped if it's already there). Returns the file id. */
-    suspend fun upload(token: String, rec: PendingRecording, file: File, onProgress: (Float) -> Unit): String {
-        api.findByRecId(token, rec.id)?.let { return it }
+    /** Upload one recording to the Drive mailbox (skipped if it's already there). Resumes the
+     *  recording's saved upload session, so an interrupted upload continues instead of restarting.
+     *  Returns the Drive file id. */
+    suspend fun upload(
+        token: String,
+        rec: PendingRecording,
+        file: File,
+        onSession: (String?) -> Unit,
+        onProgress: (Float) -> Unit,
+    ): String {
+        if (rec.driveSession == null) api.findByRecId(token, rec.id)?.let { return it }
         val meta = RelayRecording(
             recId = rec.id,
             title = rec.title,
@@ -99,8 +107,17 @@ class DriveRelay(private val context: Context, private val prefs: Prefs) {
         return RandomAccessFile(file, "r").use { raf ->
             api.upload(token, meta, file.length(), "audio/mp4",
                 read = { offset, len -> ByteArray(len).also { raf.seek(offset); raf.readFully(it) } },
-                onProgress = onProgress)
+                onProgress = onProgress,
+                session = rec.driveSession,
+                onSession = onSession)
         }
+    }
+
+    /** Push a rename for a recording that is in (or has been through) the Drive mailbox. */
+    suspend fun pushRename(token: String, rec: PendingRecording) {
+        val fileId = rec.cloudFileId
+        if (!rec.uploaded && fileId != null && api.setTitle(token, fileId, rec.title)) return // still waiting there
+        api.postRename(token, rec.id, rec.title) // the PC already has it: leave it a rename note
     }
 
     /** Has the PC already taken this recording out of the Drive mailbox? */

@@ -37,8 +37,12 @@ data class AppConfig(
     val whisperModel: String = "large-v3",
     val ollamaModel: String = "qwen2.5:7b-instruct",
     val device: String = "auto",
-    /** Study materials generated automatically right after correction. */
-    val autoGenerateMaterials: List<String> = listOf("summary", "notes"),
+    /** AI steps are on demand by default: after transcription nothing runs automatically unless
+     *  the user opts in here (Settings ▸ "Automatically after transcription"). */
+    val autoCorrect: Boolean = false,
+    val autoGenerateMaterials: List<String> = emptyList(),
+    /** Bumped when a default changes in a way existing configs must adopt (see AppState init). */
+    val configSchema: Int = 0,
     val firstRunComplete: Boolean = false,
 
     // ── Wi-Fi sync (phone/watch → desktop) ──

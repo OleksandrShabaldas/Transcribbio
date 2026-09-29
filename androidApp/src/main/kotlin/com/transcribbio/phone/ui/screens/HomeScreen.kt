@@ -1,5 +1,8 @@
 package com.transcribbio.phone.ui.screens
 
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -140,7 +143,7 @@ fun HomeScreen() {
         }
 
         Spacer(Modifier.height(16.dp))
-        SyncStatusRow(syncState) { AppGraph.sync.requestSync(context) }
+        SyncStatusRow(syncState) { AppGraph.sync.requestSync(context, userAsked = true) }
         Spacer(Modifier.height(8.dp))
 
         if (recordings.isNotEmpty()) {
@@ -179,6 +182,7 @@ private fun RecordingRow(rec: PendingRecording) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     val file = remember(rec.id, rec.fileName) { AppGraph.store.audioFile(rec) }
     // System "Save as" dialog: Downloads, SD card, Drive, … → copy the recording there.
@@ -217,6 +221,11 @@ private fun RecordingRow(rec: PendingRecording) {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "More options") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
+                        text = { Text("Rename…") },
+                        leadingIcon = { Icon(Icons.Default.DriveFileRenameOutline, null) },
+                        onClick = { menuOpen = false; renaming = true },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Share…") },
                         leadingIcon = { Icon(Icons.Default.Share, null) },
                         enabled = file.exists(),
@@ -242,5 +251,24 @@ private fun RecordingRow(rec: PendingRecording) {
                 }
             }
         }
+    }
+    if (renaming) {
+        var text by remember { mutableStateOf(rec.title) }
+        AlertDialog(
+            onDismissRequest = { renaming = false },
+            title = { Text("Rename recording") },
+            text = {
+                OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true,
+                    label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = {
+                TextButton(enabled = text.isNotBlank(), onClick = {
+                    AppGraph.store.rename(rec.id, text)
+                    AppGraph.sync.requestSync(context) // carries the new name to the PC if it already has it
+                    renaming = false
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { renaming = false }) { Text("Cancel") } },
+        )
     }
 }

@@ -31,8 +31,8 @@ android {
         applicationId = "com.transcribbio.phone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.4"
+        versionCode = 5
+        versionName = "1.0.5"
     }
 
     buildFeatures {

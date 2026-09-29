@@ -103,7 +103,7 @@ class ProcessingOrchestrator(
             path = repo.audioPath(lecture).toAbsolutePath().toString(),
             language = lecture.language,
             materials = config.autoGenerateMaterials,
-            correct = true,
+            correct = config.autoCorrect,
         )
 
         try {
