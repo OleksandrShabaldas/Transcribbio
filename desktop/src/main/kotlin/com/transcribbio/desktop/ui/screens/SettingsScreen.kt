@@ -563,6 +563,10 @@ private fun ModelRow(
 private const val PHONE_PACKAGE = "com.transcribbio.phone"
 private const val PHONE_SHA1 = "4A:0C:EF:D0:EE:8E:17:6F:F9:8C:F5:96:BC:BA:59:6F:84:29:B2:E2"
 
+/** Public pages Google requires before an app can be published (served from the repo's gh-pages branch). */
+private const val SITE = "https://oleksandrshabaldas.github.io/Transcribbio/"
+private const val SITE_DOMAIN = "oleksandrshabaldas.github.io"
+
 /** The one-time Google Cloud setup for the Drive relay, as numbered steps with links. */
 @Composable
 private fun DriveSetupSteps(onOpenUrl: (String) -> Unit, onCopy: (String) -> Unit) {
@@ -574,6 +578,11 @@ private fun DriveSetupSteps(onOpenUrl: (String) -> Unit, onCopy: (String) -> Uni
         Step("Set up sign-in: Get started → App name \"Transcribbio\", your email → Audience \"External\" → " +
             "your email as contact → Create.",
             "https://console.cloud.google.com/auth/overview"),
+        Step("Branding → paste these links, add the authorized domain → Save. Google won't allow " +
+            "publishing without them.",
+            "https://console.cloud.google.com/auth/branding",
+            listOf("App home page" to SITE, "Privacy policy" to "${SITE}privacy.html",
+                "Terms of service" to "${SITE}terms.html", "Authorized domain" to SITE_DOMAIN)),
         Step("Data access → Add or remove scopes → search \"drive.appdata\" → tick it → Update → Save.",
             "https://console.cloud.google.com/auth/scopes"),
         Step("Audience → Publish app → Confirm. No review is needed (Transcribbio only asks for its own hidden " +
